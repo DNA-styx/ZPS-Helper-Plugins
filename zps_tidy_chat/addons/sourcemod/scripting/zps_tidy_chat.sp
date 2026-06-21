@@ -6,6 +6,7 @@
 ConVar g_cvarEnabled;
 ConVar g_cvarVoice;
 ConVar g_cvarConnect;
+ConVar g_cvarJoinMsg;
 ConVar g_cvarDisconnect;
 ConVar g_cvarChangeClass;
 ConVar g_cvarTeam;
@@ -16,7 +17,7 @@ ConVar g_cvarAllText;
 
 EngineVersion g_engine = Engine_Unknown;
 
-#define PLUGIN_VERSION "0.6.1"
+#define PLUGIN_VERSION "0.6.2"
 public Plugin myinfo = 
 {
 	name = "Tidy Chat",
@@ -33,6 +34,7 @@ public void OnPluginStart()
 	g_cvarEnabled = CreateConVar("sm_tidychat_on", "1", "0/1 On/off");
 	g_cvarVoice = CreateConVar("sm_tidychat_voice", "1", "0/1 Tidy (Voice) messages");
 	g_cvarConnect = CreateConVar("sm_tidychat_connect", "0", "0/1 Tidy connect messages");
+	g_cvarJoinMsg = CreateConVar("sm_tidychat_joinmsg", "1", "0/1 Tidy 'has joined the game' messages");
 	g_cvarDisconnect = CreateConVar("sm_tidychat_disconnect", "0", "0/1 Tidy disconnect messsages");
 	g_cvarChangeClass = CreateConVar("sm_tidychat_class", "1", "0/1 Tidy class change messages");
 	g_cvarTeam = CreateConVar("sm_tidychat_team", "1", "0/1 Tidy team join messages");
@@ -129,14 +131,19 @@ public Action UserMsg_TextMsg(UserMsg msg_id, BfRead msg, const int[] players, i
 	{
 		if(g_cvarAllText.BoolValue) return Plugin_Handled;
 
+		char message[128];
+		msg.ReadByte();
+		msg.ReadString(message, sizeof(message));
+
+		//PrintToServer("message = \"%s\"", message);
+
+		if(g_cvarJoinMsg.BoolValue && StrContains(message, "has joined the game") != -1)
+		{
+			return Plugin_Handled;
+		}
+
 		if(g_engine == Engine_TF2)
 		{
-			char message[32];
-			msg.ReadByte();
-			msg.ReadString(message, sizeof(message));
-
-			//PrintToServer("message = \"%s\"", message);
-
 			if(g_cvarChangeClass.BoolValue && (strcmp(message, "#game_respawn_as") == 0 || strcmp(message, "#game_spawn_as") == 0))
 			{
 				return Plugin_Handled;
