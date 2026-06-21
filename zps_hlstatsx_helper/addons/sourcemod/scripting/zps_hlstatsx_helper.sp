@@ -6,16 +6,20 @@
 
 // claude.ai guided by DNA.styx
 //
-// Zombie Panic: Source doesn't write kills, chat, connect IPs, or
-// disconnects to the server log file, even though the events happen
-// normally in-game. This breaks HLstatsX, which reads the log file
-// (and RCON status, which is also non-standard on this server) to
-// track kills/deaths/skill, chat history, and GeoIP/country flags.
+// Zombie Panic: Source doesn't write kills, chat, connect IPs,
+// disconnects, or "entered the game" lines to the server log file, even
+// though the events happen normally in-game. This breaks HLstatsX, which
+// reads the log file (and RCON status, which is also non-standard on
+// this server) to track kills/deaths/skill, chat history, GeoIP/country
+// flags, and ConnectAnnounce.
 //
 // This plugin watches those events directly and writes the missing
 // lines to the log in the standard format HLstatsX already expects.
+// The "entered the game" line/format was confirmed directly against the
+// HLstatsZ daemon's own source (doEvent_EnterGame in
+// HLstats_EventHandlers.plib, github.com/SnipeZilla/HLSTATS-2).
 
-#define PLUGIN_VERSION "1.4.3"
+#define PLUGIN_VERSION "1.5.0"
 #define MAX_TEAMS 8
 
 char g_sTeamName[MAX_TEAMS][32];
@@ -24,7 +28,7 @@ public Plugin myinfo =
 {
 	name        = "DNAGames ZPS HLstatsX Helper",
 	author      = "claude.ai guided by DNA.styx",
-	description = "Fixes missing kill, chat, connect/IP, and disconnect logging for HLstatsX on Zombie Panic: Source.",
+	description = "Fixes missing kill, chat, connect/IP, disconnect, and join logging for HLstatsX on Zombie Panic: Source.",
 	version     = PLUGIN_VERSION,
 	url         = "https://github.com/DNA-styx/ZPS-Helper-Plugins"
 };
@@ -59,6 +63,27 @@ public void OnClientAuthorized(int client, const char[] auth)
 	// it and only keeps the IP portion.
 	LogToGame("\"%s<%d><%s><>\" connected, address \"%s:0\"",
 		playerName, GetClientUserId(client), playerAuth, ip);
+}
+
+public void OnClientPutInServer(int client)
+{
+	if (IsFakeClient(client))
+	{
+		return;
+	}
+
+	// Matches doEvent_EnterGame in the daemon, which is what drives
+	// ConnectAnnounce (and requires this line to fire after the
+	// "connected, address" line, since it needs an existing player
+	// record with a valid userid - guaranteed here since
+	// OnClientAuthorized always fires before OnClientPutInServer).
+	char playerName[MAX_NAME_LENGTH], playerAuth[32], playerTeam[32];
+	GetClientName(client, playerName, sizeof(playerName));
+	GetClientAuthId(client, AuthId_Steam2, playerAuth, sizeof(playerAuth));
+	GetTeamNameForClient(client, playerTeam, sizeof(playerTeam));
+
+	LogToGame("\"%s<%d><%s><%s>\" entered the game",
+		playerName, GetClientUserId(client), playerAuth, playerTeam);
 }
 
 public void OnClientDisconnect(int client)
