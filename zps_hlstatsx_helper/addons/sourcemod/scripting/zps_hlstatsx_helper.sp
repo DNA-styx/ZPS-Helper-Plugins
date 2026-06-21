@@ -15,7 +15,7 @@
 // This plugin watches those events directly and writes the missing
 // lines to the log in the standard format HLstatsX already expects.
 
-#define PLUGIN_VERSION "1.3.0"
+#define PLUGIN_VERSION "1.4.0"
 #define MAX_TEAMS 8
 
 char g_sTeamName[MAX_TEAMS][32];
@@ -67,11 +67,14 @@ public void OnClientAuthorized(int client, const char[] auth)
 
 public void OnClientDisconnect(int client)
 {
-	if (IsFakeClient(client))
-	{
-		return;
-	}
-
+	// Unlike OnClientAuthorized, bots are NOT skipped here. The daemon has
+	// no other way to learn a bot has left (ZPS doesn't log bot
+	// connects/disconnects natively, and NavBot's quota system cycles bots
+	// constantly), so without this line every bot that's ever appeared in
+	// a kill/weaponstats line stays "currently playing" forever. The
+	// daemon's own disconnect handler already has bot-specific logic that
+	// correctly excludes them from stats (matching the server's
+	// IgnoreBots setting) while still removing them from tracking.
 	char playerName[MAX_NAME_LENGTH], playerAuth[32], playerTeam[32];
 	GetClientName(client, playerName, sizeof(playerName));
 	GetClientAuthId(client, AuthId_Steam2, playerAuth, sizeof(playerAuth));
