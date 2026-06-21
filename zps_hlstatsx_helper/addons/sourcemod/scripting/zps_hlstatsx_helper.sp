@@ -15,7 +15,7 @@
 // This plugin watches those events directly and writes the missing
 // lines to the log in the standard format HLstatsX already expects.
 
-#define PLUGIN_VERSION "1.4.0"
+#define PLUGIN_VERSION "1.4.3"
 #define MAX_TEAMS 8
 
 char g_sTeamName[MAX_TEAMS][32];
@@ -31,10 +31,6 @@ public Plugin myinfo =
 
 public void OnPluginStart()
 {
-	// Sensible defaults until CacheTeamNames() populates the real ones
-	strcopy(g_sTeamName[0], sizeof(g_sTeamName[]), "Unassigned");
-	strcopy(g_sTeamName[1], sizeof(g_sTeamName[]), "Spectator");
-
 	CacheTeamNames();
 
 	HookEvent("player_feed", Event_PlayerFeed);
@@ -78,7 +74,7 @@ public void OnClientDisconnect(int client)
 	char playerName[MAX_NAME_LENGTH], playerAuth[32], playerTeam[32];
 	GetClientName(client, playerName, sizeof(playerName));
 	GetClientAuthId(client, AuthId_Steam2, playerAuth, sizeof(playerAuth));
-	GetTeamNameSafe(GetClientTeam(client), playerTeam, sizeof(playerTeam));
+	GetTeamNameForClient(client, playerTeam, sizeof(playerTeam));
 
 	LogToGame("\"%s<%d><%s><%s>\" disconnected (reason \"Disconnect\")",
 		playerName, GetClientUserId(client), playerAuth, playerTeam);
@@ -112,6 +108,25 @@ void GetTeamNameSafe(int team, char[] buffer, int maxlen)
 	if (team >= 0 && team < MAX_TEAMS && g_sTeamName[team][0] != '\0')
 	{
 		strcopy(buffer, maxlen, g_sTeamName[team]);
+	}
+	else
+	{
+		strcopy(buffer, maxlen, "Unassigned");
+	}
+}
+
+// Combines the IsClientInGame guard with team lookup in one place, used
+// everywhere GetClientTeam is needed. GetClientTeam can throw "Client X
+// is not in game" for clients invalidated right before the calling
+// callback runs (confirmed via SourceMod error log on OnClientDisconnect,
+// likely due to NavBot's quota-cycle churn) - centralizing the guard here
+// means every call site is protected the same way rather than relying on
+// guards living at different points in different functions.
+void GetTeamNameForClient(int client, char[] buffer, int maxlen)
+{
+	if (IsClientInGame(client))
+	{
+		GetTeamNameSafe(GetClientTeam(client), buffer, maxlen);
 	}
 	else
 	{
@@ -156,8 +171,8 @@ public void Event_PlayerFeed(Event event, const char[] name, bool dontBroadcast)
 	GetClientName(attacker, attackerName, sizeof(attackerName));
 	GetClientAuthId(victim, AuthId_Steam2, victimAuth, sizeof(victimAuth));
 	GetClientAuthId(attacker, AuthId_Steam2, attackerAuth, sizeof(attackerAuth));
-	GetTeamNameSafe(GetClientTeam(victim), victimTeam, sizeof(victimTeam));
-	GetTeamNameSafe(GetClientTeam(attacker), attackerTeam, sizeof(attackerTeam));
+	GetTeamNameForClient(victim, victimTeam, sizeof(victimTeam));
+	GetTeamNameForClient(attacker, attackerTeam, sizeof(attackerTeam));
 
 	char props[16];
 	props[0] = '\0';
@@ -196,7 +211,7 @@ public Action Command_Say(int client, const char[] command, int args)
 	char playerName[MAX_NAME_LENGTH], playerAuth[32], playerTeam[32];
 	GetClientName(client, playerName, sizeof(playerName));
 	GetClientAuthId(client, AuthId_Steam2, playerAuth, sizeof(playerAuth));
-	GetTeamNameSafe(GetClientTeam(client), playerTeam, sizeof(playerTeam));
+	GetTeamNameForClient(client, playerTeam, sizeof(playerTeam));
 
 	// Per DNA.styx: log all chat (public + team) through one "say" stream,
 	// with team-restricted messages marked via a "(Team)" text prefix
