@@ -1,0 +1,96 @@
+"Phrases"
+{
+	// ─── Chat messages ────────────────────────────────────────────────────────
+
+	"ZNSI_InGameOnly"
+	{
+		"en"	"[NavSpawn] In-game use only."
+	}
+
+	"ZNSI_NoLogsFound"
+	{
+		"en"	"[NavSpawn] No spawncheck logs found."
+	}
+
+	"ZNSI_LoadFailed"
+	{
+		"en"	"[NavSpawn] No valid positions found — file may be empty or all entries were filtered."
+	}
+
+	"ZNSI_NoPositions"
+	{
+		"en"	"[NavSpawn] No positions loaded."
+	}
+
+	// ─── File selection menu ──────────────────────────────────────────────────
+
+	"ZNSI_MenuTitle"
+	{
+		"en"	"NavMesh Spawn Inspector"
+	}
+
+	"ZNSI_MapNoLog"
+	{
+		"#format"	"{1:s}"
+		"en"		"[current] {1} - no log found"
+	}
+
+	"ZNSI_MapCurrentEntry"
+	{
+		"#format"	"{1:s},{2:s}"
+		"en"		"[current] {1} ({2})"
+	}
+
+	"ZNSI_MapEntry"
+	{
+		"#format"	"{1:s},{2:s}"
+		"en"		"{1} ({2})"
+	}
+
+	// ─── Navigation menu ──────────────────────────────────────────────────────
+
+	"ZNSI_NavTitleBegin"
+	{
+		"#format"	"{1:d}"
+		"en"		"NSI [0/{1}]\nPress Next to begin"
+	}
+
+	"ZNSI_NavTitle"
+	{
+		"#format"	"{1:d},{2:d},{3:s},{4:s}"
+		"en"		"NSI [{1}/{2}]\n{3}\n{4}"
+	}
+
+	"ZNSI_Previous"
+	{
+		"en"	"<< Previous"
+	}
+
+	"ZNSI_Next"
+	{
+		"en"	"Next >>"
+	}
+
+	"ZNSI_BackToList"
+	{
+		"en"	"Back to file list"
+	}
+
+	// ─── Map change confirmation menu ─────────────────────────────────────────
+
+	"ZNSI_ConfirmTitle"
+	{
+		"#format"	"{1:s}"
+		"en"		"Change map to:\n{1}"
+	}
+
+	"ZNSI_ConfirmYes"
+	{
+		"en"	"Yes, change map"
+	}
+
+	"ZNSI_ConfirmNo"
+	{
+		"en"	"No, go back"
+	}
+}
