@@ -12,14 +12,37 @@
 		"en"	"[NavSpawn] No spawncheck logs found."
 	}
 
-	"ZNSI_LoadFailed"
+	"ZNSI_AllNavmesh"
 	{
-		"en"	"[NavSpawn] No valid positions found — file may be empty or all entries were filtered."
+		"en"	"All valid spawn positions have Navmesh.\nDelete log file?"
 	}
 
 	"ZNSI_NoPositions"
 	{
 		"en"	"[NavSpawn] No positions loaded."
+	}
+
+	// ─── Delete log confirmation menu ─────────────────────────────────────────
+
+	"ZNSI_DeleteYes"
+	{
+		"en"	"Yes, delete log file"
+	}
+
+	"ZNSI_DeleteNo"
+	{
+		"en"	"No, back to map list"
+	}
+
+	"ZNSI_DeleteSuccess"
+	{
+		"#format"	"{1:d}"
+		"en"		"[NavSpawn] {1} log file(s) deleted."
+	}
+
+	"ZNSI_DeleteFailed"
+	{
+		"en"	"[NavSpawn] Failed to delete log file."
 	}
 
 	// ─── File selection menu ──────────────────────────────────────────────────

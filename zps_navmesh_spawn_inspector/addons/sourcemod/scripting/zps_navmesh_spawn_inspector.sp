@@ -4,7 +4,7 @@
 #include <sourcemod>
 #include <sdktools>
 
-#define PLUGIN_VERSION "1.2.0"
+#define PLUGIN_VERSION "1.2.3"
 #define TELEPORT_COOLDOWN 0.1
 
 // Filename format: spchecker_<mapname>_YYYY-MM-DD.log
@@ -361,12 +361,111 @@ public int MenuHandler_File(Menu menu, MenuAction action, int param1, int param2
 
 		if (!LoadFile(filename))
 		{
-			PrintToChat(param1, "%T", "ZNSI_LoadFailed", param1);
+			ShowDeleteMenu(param1, filename);
 			return 0;
 		}
 
 		g_CurrentPos[param1] = -1;
 		ShowNavMenu(param1);
+	}
+	else if (action == MenuAction_End)
+	{
+		delete menu;
+	}
+	return 0;
+}
+
+// ─── Delete log confirmation menu ────────────────────────────────────────────
+
+// ─── Delete log confirmation menu ────────────────────────────────────────────
+
+// Deletes all spchecker_<mapName>_*.log files. Returns count of deleted files.
+int DeleteMapLogs(const char[] mapName)
+{
+	char prefix[128];
+	Format(prefix, sizeof(prefix), "%s%s_", SPCHECK_PREFIX, mapName);
+	int prefixLen = strlen(prefix);
+
+	char logDir[PLATFORM_MAX_PATH];
+	BuildPath(Path_SM, logDir, sizeof(logDir), "logs");
+
+	DirectoryListing dir = OpenDirectory(logDir);
+	if (dir == null)
+		return 0;
+
+	int deleted = 0;
+	char filename[PLATFORM_MAX_PATH];
+	char path[PLATFORM_MAX_PATH];
+	FileType ft;
+
+	while (dir.GetNext(filename, sizeof(filename), ft))
+	{
+		if (ft != FileType_File)
+			continue;
+		if (strncmp(filename, prefix, prefixLen, false) != 0)
+			continue;
+		int len = strlen(filename);
+		if (len < 4 || strcmp(filename[len - 4], ".log", false) != 0)
+			continue;
+
+		BuildPath(Path_SM, path, sizeof(path), "logs/%s", filename);
+		if (DeleteFile(path))
+			deleted++;
+	}
+
+	delete dir;
+	return deleted;
+}
+
+void ShowDeleteMenu(int client, const char[] filename)
+{
+	// Extract map name to use as item value — allows deleting all dated logs for this map
+	int len = strlen(filename);
+	int mapLen = len - SPCHECK_PREFIX_LEN - SPCHECK_SUFFIX_LEN;
+	char mapName[64];
+	if (mapLen > 0)
+	{
+		int safeLen = mapLen + 1 < sizeof(mapName) ? mapLen + 1 : sizeof(mapName);
+		strcopy(mapName, safeLen, filename[SPCHECK_PREFIX_LEN]);
+	}
+	else
+		strcopy(mapName, sizeof(mapName), filename);
+
+	Menu menu = new Menu(MenuHandler_Delete);
+
+	char title[128];
+	Format(title, sizeof(title), "%T", "ZNSI_AllNavmesh", client);
+	menu.SetTitle(title);
+	menu.ExitButton = true;
+
+	char yes[64], no[64];
+	Format(yes, sizeof(yes), "%T", "ZNSI_DeleteYes", client);
+	Format(no,  sizeof(no),  "%T", "ZNSI_DeleteNo",  client);
+	menu.AddItem(mapName, yes); // map name stored as item value for multi-file deletion
+	menu.AddItem("", no);
+
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int MenuHandler_Delete(Menu menu, MenuAction action, int param1, int param2)
+{
+	if (action == MenuAction_Select)
+	{
+		char mapName[64];
+		menu.GetItem(param2, mapName, sizeof(mapName));
+
+		if (strlen(mapName) > 0)
+		{
+			int count = DeleteMapLogs(mapName);
+			if (count > 0)
+				PrintToChat(param1, "%T", "ZNSI_DeleteSuccess", param1, count);
+			else
+				PrintToChat(param1, "%T", "ZNSI_DeleteFailed", param1);
+
+			BuildFileList();
+		}
+
+		ShowFileMenu(param1);
 	}
 	else if (action == MenuAction_End)
 	{
