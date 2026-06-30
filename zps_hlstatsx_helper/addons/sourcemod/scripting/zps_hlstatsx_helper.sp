@@ -19,8 +19,10 @@
 // HLstatsZ daemon's own source (doEvent_EnterGame in
 // HLstats_EventHandlers.plib, github.com/SnipeZilla/HLSTATS-2).
 
-#define PLUGIN_VERSION "1.5.0"
+#define PLUGIN_VERSION "1.7.0"
 #define MAX_TEAMS 8
+#define TEAM_SURVIVORS 2
+#define TEAM_ZOMBIES 3
 
 char g_sTeamName[MAX_TEAMS][32];
 
@@ -38,6 +40,7 @@ public void OnPluginStart()
 	CacheTeamNames();
 
 	HookEvent("player_feed", Event_PlayerFeed);
+	HookEvent("clientsound", Event_ClientSound);
 	AddCommandListener(Command_Say, "say");
 	AddCommandListener(Command_Say, "say_team");
 }
@@ -165,12 +168,58 @@ public void Event_PlayerFeed(Event event, const char[] name, bool dontBroadcast)
 	int attacker = GetClientOfUserId(event.GetInt("attacker"));
 	bool headshot = event.GetBool("headshot");
 
-	// Player-on-player kills and infections only.
-	// World/environment deaths (no valid attacker) are skipped.
-	if (victim <= 0 || attacker <= 0 || victim == attacker)
+	// World/environment deaths (no valid attacker, or self-inflicted) are
+	// logged as suicides with a virtual weapon code derived from dmgbits.
+	// Gated on death==true since player_feed also fires on non-fatal
+	// infection events. Sub-lethal fall/burn/drown damage never reaches
+	// here since player_feed only fires once, on the killing blow -
+	// confirmed via Source engine CTakeDamageInfo semantics (damage type
+	// is per-instance, not accumulated).
+	//
+	// dmgbits values confirmed against the ZPS FGD damagetype enum:
+	// DROWN=16384, FALL=32, BURN=8. DROWN additionally confirmed live via
+	// player_feed log capture during NavBot drowning tests
+	// (zps_drown_logger.sp). FALL and BURN are assumed to follow the same
+	// per-instance semantics, pending live confirmation for real players.
+	if (attacker <= 0 || victim == attacker)
 	{
+		if (victim <= 0 || !IsClientInGame(victim) || !event.GetBool("death"))
+		{
+			return;
+		}
+
+		int dmgbits = event.GetInt("dmgbits");
+		char cause[16];
+
+		if (dmgbits & (1 << 14))        // DROWN = 16384
+		{
+			strcopy(cause, sizeof(cause), "zps_drown");
+		}
+		else if (dmgbits & (1 << 5))    // FALL = 32
+		{
+			strcopy(cause, sizeof(cause), "zps_fall");
+		}
+		else if (dmgbits & (1 << 3))    // BURN = 8
+		{
+			strcopy(cause, sizeof(cause), "zps_burn");
+		}
+		else
+		{
+			return; // other world causes not yet confirmed, skip as before
+		}
+
+		char victimName[MAX_NAME_LENGTH], victimAuth[32], victimTeam[32];
+		GetClientName(victim, victimName, sizeof(victimName));
+		GetClientAuthId(victim, AuthId_Steam2, victimAuth, sizeof(victimAuth));
+		GetTeamNameForClient(victim, victimTeam, sizeof(victimTeam));
+
+		LogToGame("\"%s<%d><%s><%s>\" committed suicide with \"%s\"",
+			victimName, GetClientUserId(victim), victimAuth, victimTeam, cause);
+
 		return;
 	}
+
+	// Player-on-player kills and infections only from this point on.
 	if (!IsClientInGame(victim) || !IsClientInGame(attacker))
 	{
 		return;
@@ -210,6 +259,61 @@ public void Event_PlayerFeed(Event event, const char[] name, bool dontBroadcast)
 		attackerName, GetClientUserId(attacker), attackerAuth, attackerTeam,
 		victimName, GetClientUserId(victim), victimAuth, victimTeam,
 		weapon, props);
+}
+
+public void Event_ClientSound(Event event, const char[] name, bool dontBroadcast)
+{
+	char sound[64];
+	event.GetString("sound", sound, sizeof(sound));
+
+	if (StrContains(sound, "Round_Starting", false) != -1)
+	{
+		// Resets the daemon's internal round_status counter, which gates
+		// team-reward processing in doEvent_TeamAction (confirmed via
+		// HLstatsZ source, HLstats_EventHandlers.plib). ZPS's native
+		// round_start event is unreliable, so without this line only the
+		// first round win after a daemon restart would ever pay out -
+		// round_status never resets and every subsequent win gets
+		// silently ignored as "round in progress".
+		LogToGame("World triggered \"Round_Start\"");
+	}
+	else if (StrContains(sound, "Round_End.Human", false) != -1)
+	{
+		LogRoundWin(TEAM_SURVIVORS, "zps_survivor_win", "zps_survivor_alive");
+	}
+	else if (StrContains(sound, "Round_End.Zombie", false) != -1)
+	{
+		LogRoundWin(TEAM_ZOMBIES, "zps_zombie_win", "zps_zombie_alive");
+	}
+	// Round_End.Stalemate intentionally produces no log lines - no
+	// reward is configured for a draw.
+}
+
+// Single Team-triggered line rewards every tracked player on the
+// winning team via the daemon's rewardTeam(), regardless of alive/dead
+// status. Per-player triggered lines on top of that give an additional
+// bonus only to players still alive when the round ended.
+void LogRoundWin(int winningTeam, const char[] teamAction, const char[] aliveAction)
+{
+	char teamName[32];
+	GetTeamNameSafe(winningTeam, teamName, sizeof(teamName));
+
+	LogToGame("Team \"%s\" triggered \"%s\"", teamName, teamAction);
+
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (!IsClientInGame(i) || !IsPlayerAlive(i) || GetClientTeam(i) != winningTeam)
+		{
+			continue;
+		}
+
+		char playerName[MAX_NAME_LENGTH], playerAuth[32];
+		GetClientName(i, playerName, sizeof(playerName));
+		GetClientAuthId(i, AuthId_Steam2, playerAuth, sizeof(playerAuth));
+
+		LogToGame("\"%s<%d><%s><%s>\" triggered \"%s\"",
+			playerName, GetClientUserId(i), playerAuth, teamName, aliveAction);
+	}
 }
 
 public Action Command_Say(int client, const char[] command, int args)
