@@ -19,7 +19,7 @@
 // HLstatsZ daemon's own source (doEvent_EnterGame in
 // HLstats_EventHandlers.plib, github.com/SnipeZilla/HLSTATS-2).
 
-#define PLUGIN_VERSION "1.7.0"
+#define PLUGIN_VERSION "1.8.0"
 #define MAX_TEAMS 8
 #define TEAM_SURVIVORS 2
 #define TEAM_ZOMBIES 3
@@ -166,60 +166,52 @@ public void Event_PlayerFeed(Event event, const char[] name, bool dontBroadcast)
 {
 	int victim   = GetClientOfUserId(event.GetInt("userid"));
 	int attacker = GetClientOfUserId(event.GetInt("attacker"));
+	bool death    = event.GetBool("death");
 	bool headshot = event.GetBool("headshot");
 
-	// World/environment deaths (no valid attacker, or self-inflicted) are
-	// logged as suicides with a virtual weapon code derived from dmgbits.
-	// Gated on death==true since player_feed also fires on non-fatal
-	// infection events. Sub-lethal fall/burn/drown damage never reaches
-	// here since player_feed only fires once, on the killing blow -
-	// confirmed via Source engine CTakeDamageInfo semantics (damage type
-	// is per-instance, not accumulated).
-	//
-	// dmgbits values confirmed against the ZPS FGD damagetype enum:
-	// DROWN=16384, FALL=32, BURN=8. DROWN additionally confirmed live via
-	// player_feed log capture during NavBot drowning tests
-	// (zps_drown_logger.sp). FALL and BURN are assumed to follow the same
-	// per-instance semantics, pending live confirmation for real players.
-	if (attacker <= 0 || victim == attacker)
+	// Environmental deaths: attacker=0 means a world/map source killed the player.
+	// Only FALL (dmgbits 32), DROWN (dmgbits 16384), and BURN (dmgbits 8 or
+	// 268435456) are logged. trigger_hurt generic (dmgbits 0) and crush
+	// (dmgbits 1) are skipped — confirmed via feed logger analysis.
+	// entityflame (268435456) is ZPS-specific fire damage, mapped to zps_burn.
+	if (victim > 0 && attacker <= 0 && death && IsClientInGame(victim))
 	{
-		if (victim <= 0 || !IsClientInGame(victim) || !event.GetBool("death"))
-		{
-			return;
-		}
-
 		int dmgbits = event.GetInt("dmgbits");
-		char cause[16];
+		char suicideWeapon[32];
 
-		if (dmgbits & (1 << 14))        // DROWN = 16384
+		if (dmgbits & 32)
 		{
-			strcopy(cause, sizeof(cause), "zps_drown");
+			strcopy(suicideWeapon, sizeof(suicideWeapon), "zps_fall");
 		}
-		else if (dmgbits & (1 << 5))    // FALL = 32
+		else if (dmgbits & 16384)
 		{
-			strcopy(cause, sizeof(cause), "zps_fall");
+			strcopy(suicideWeapon, sizeof(suicideWeapon), "zps_drown");
 		}
-		else if (dmgbits & (1 << 3))    // BURN = 8
+		else if ((dmgbits & 8) || (dmgbits & 268435456))
 		{
-			strcopy(cause, sizeof(cause), "zps_burn");
-		}
-		else
-		{
-			return; // other world causes not yet confirmed, skip as before
+			strcopy(suicideWeapon, sizeof(suicideWeapon), "zps_burn");
 		}
 
-		char victimName[MAX_NAME_LENGTH], victimAuth[32], victimTeam[32];
-		GetClientName(victim, victimName, sizeof(victimName));
-		GetClientAuthId(victim, AuthId_Steam2, victimAuth, sizeof(victimAuth));
-		GetTeamNameForClient(victim, victimTeam, sizeof(victimTeam));
+		if (suicideWeapon[0] != '\0')
+		{
+			char victimName[MAX_NAME_LENGTH], victimAuth[32], victimTeam[32];
+			GetClientName(victim, victimName, sizeof(victimName));
+			GetClientAuthId(victim, AuthId_Steam2, victimAuth, sizeof(victimAuth));
+			GetTeamNameForClient(victim, victimTeam, sizeof(victimTeam));
 
-		LogToGame("\"%s<%d><%s><%s>\" committed suicide with \"%s\"",
-			victimName, GetClientUserId(victim), victimAuth, victimTeam, cause);
-
+			LogToGame("\"%s<%d><%s><%s>\" committed suicide with \"%s\"",
+				victimName, GetClientUserId(victim), victimAuth, victimTeam,
+				suicideWeapon);
+		}
 		return;
 	}
 
-	// Player-on-player kills and infections only from this point on.
+	// Player-on-player kills and infections only.
+	// All other world/environment deaths are skipped.
+	if (victim <= 0 || attacker <= 0 || victim == attacker)
+	{
+		return;
+	}
 	if (!IsClientInGame(victim) || !IsClientInGame(attacker))
 	{
 		return;
@@ -237,16 +229,33 @@ public void Event_PlayerFeed(Event event, const char[] name, bool dontBroadcast)
 		strcopy(weapon, sizeof(weapon), weapon[7]);
 	}
 
-	char victimName[MAX_NAME_LENGTH], attackerName[MAX_NAME_LENGTH];
-	char victimAuth[32], attackerAuth[32];
-	char victimTeam[32], attackerTeam[32];
-
-	GetClientName(victim, victimName, sizeof(victimName));
+	char attackerName[MAX_NAME_LENGTH], attackerAuth[32], attackerTeam[32];
 	GetClientName(attacker, attackerName, sizeof(attackerName));
-	GetClientAuthId(victim, AuthId_Steam2, victimAuth, sizeof(victimAuth));
 	GetClientAuthId(attacker, AuthId_Steam2, attackerAuth, sizeof(attackerAuth));
-	GetTeamNameForClient(victim, victimTeam, sizeof(victimTeam));
 	GetTeamNameForClient(attacker, attackerTeam, sizeof(attackerTeam));
+
+	// When weapon is "infected" and death is false, the carrier has tagged a
+	// survivor with infection - the survivor is still alive and may self-heal.
+	// Log as a player action rather than a kill (confirmed via feed logger:
+	// infected events with death=0 are always followed by a separate carrierarms
+	// event with death=1 if the survivor actually dies from the attack).
+	if (StrEqual(weapon, "infected") && !death)
+	{
+		LogToGame("\"%s<%d><%s><%s>\" triggered \"zps_infected_player\"",
+			attackerName, GetClientUserId(attacker), attackerAuth, attackerTeam);
+		return;
+	}
+
+	// Skip non-death events for all other weapons.
+	if (!death)
+	{
+		return;
+	}
+
+	char victimName[MAX_NAME_LENGTH], victimAuth[32], victimTeam[32];
+	GetClientName(victim, victimName, sizeof(victimName));
+	GetClientAuthId(victim, AuthId_Steam2, victimAuth, sizeof(victimAuth));
+	GetTeamNameForClient(victim, victimTeam, sizeof(victimTeam));
 
 	char props[16];
 	props[0] = '\0';
