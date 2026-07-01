@@ -4,7 +4,7 @@
 #include <sourcemod>
 #include <sdktools>
 
-#define PLUGIN_VERSION "1.0.5"
+#define PLUGIN_VERSION "1.0.8"
 
 // ZPS team constants
 #define TEAM_SURVIVOR 2
@@ -13,6 +13,7 @@
 ConVar g_cvEnabled;
 ConVar g_cvDisplay;
 ConVar g_cvBots;
+ConVar g_cvVersion;
 
 public Plugin myinfo =
 {
@@ -28,18 +29,24 @@ public void OnPluginStart()
     g_cvEnabled = CreateConVar(
         "zps_playerid_enabled", "1",
         "Enable Player ID display. 1=on, 0=off",
-        FCVAR_NONE, true, 0.0, true, 1.0
+        FCVAR_PROTECTED, true, 0.0, true, 1.0
     );
     g_cvDisplay = CreateConVar(
         "zps_playerid_display", "1",
         "Display method: 1=PrintHintText, 2=PrintCenterText",
-        FCVAR_NONE, true, 1.0, true, 2.0
+        FCVAR_PROTECTED, true, 1.0, true, 2.0
     );
 
     g_cvBots = CreateConVar(
         "zps_playerid_show_bots", "1",
         "Allow bots to be identified by players. 1=on, 0=off",
-        FCVAR_NONE, true, 0.0, true, 1.0
+        FCVAR_PROTECTED, true, 0.0, true, 1.0
+    );
+
+    g_cvVersion = CreateConVar(
+        "zps_playerid_version", PLUGIN_VERSION,
+        "ZPS Player ID plugin version",
+        FCVAR_NOTIFY | FCVAR_DONTRECORD
     );
 
     AutoExecConfig(true, "zps_player_id");
@@ -64,10 +71,23 @@ public Action Timer_CheckAimTarget(Handle timer)
         if (myTeam != TEAM_SURVIVOR && myTeam != TEAM_ZOMBIE)
             continue;
 
-        // only_clients=true: returns clients only; -1=no target, -2=unsupported
-        int target = GetClientAimTarget(client, true);
+        // Trace from eye position along eye angle; stops at any solid
+        // world geometry, so it cannot return a target through a wall.
+        float eyePos[3], eyeAng[3];
+        GetClientEyePosition(client, eyePos);
+        GetClientEyeAngles(client, eyeAng);
 
-        if (target < 1 || target > MaxClients)
+        TR_TraceRayFilter(eyePos, eyeAng, MASK_SHOT, RayType_Infinite, TraceFilter_IgnoreSelf, client);
+
+        int target = -1;
+        if (TR_DidHit())
+        {
+            int hitEntity = TR_GetEntityIndex();
+            if (hitEntity >= 1 && hitEntity <= MaxClients)
+                target = hitEntity;
+        }
+
+        if (target < 1)
             continue;
 
         if (!IsClientInGame(target) || !IsPlayerAlive(target))
@@ -95,4 +115,9 @@ public Action Timer_CheckAimTarget(Handle timer)
     }
 
     return Plugin_Continue;
+}
+
+public bool TraceFilter_IgnoreSelf(int entity, int contentsMask, any data)
+{
+    return entity != data;
 }
