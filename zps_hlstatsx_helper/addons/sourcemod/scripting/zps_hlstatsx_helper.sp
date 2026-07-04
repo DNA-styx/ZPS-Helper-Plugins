@@ -19,7 +19,7 @@
 // HLstatsZ daemon's own source (doEvent_EnterGame in
 // HLstats_EventHandlers.plib, github.com/SnipeZilla/HLSTATS-2).
 
-#define PLUGIN_VERSION "1.9.0"
+#define PLUGIN_VERSION "1.9.2"
 #define MAX_TEAMS 8
 #define TEAM_SURVIVORS 2
 #define TEAM_ZOMBIES 3
@@ -201,6 +201,17 @@ public void Event_PlayerFeed(Event event, const char[] name, bool dontBroadcast)
 			GetTeamNameForClient(victim, victimTeam, sizeof(victimTeam));
 
 			LogToGame("\"%s<%d><%s><%s>\" committed suicide with \"%s\"",
+				victimName, GetClientUserId(victim), victimAuth, victimTeam,
+				suicideWeapon);
+
+			// Additional "triggered" line so these deaths also show as
+			// zero-reward PlayerActions on the Actions page, matching the
+			// zps_panic/zps_infected_player pattern. Requires matching
+			// hlstats_Actions rows (game='zps', code=zps_fall/zps_drown/
+			// zps_burn) - deliberately reuses the same code strings as the
+			// hlstats_Weapons entries since Actions and Weapons are
+			// separate tables with no naming conflict.
+			LogToGame("\"%s<%d><%s><%s>\" triggered \"%s\"",
 				victimName, GetClientUserId(victim), victimAuth, victimTeam,
 				suicideWeapon);
 		}
