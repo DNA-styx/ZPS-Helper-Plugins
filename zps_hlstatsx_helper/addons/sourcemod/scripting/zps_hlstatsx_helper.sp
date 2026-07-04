@@ -19,7 +19,7 @@
 // HLstatsZ daemon's own source (doEvent_EnterGame in
 // HLstats_EventHandlers.plib, github.com/SnipeZilla/HLSTATS-2).
 
-#define PLUGIN_VERSION "1.8.0"
+#define PLUGIN_VERSION "1.9.0"
 #define MAX_TEAMS 8
 #define TEAM_SURVIVORS 2
 #define TEAM_ZOMBIES 3
@@ -41,6 +41,7 @@ public void OnPluginStart()
 
 	HookEvent("player_feed", Event_PlayerFeed);
 	HookEvent("clientsound", Event_ClientSound);
+	HookEvent("clientsound_player", Event_ClientSoundPlayer);
 	AddCommandListener(Command_Say, "say");
 	AddCommandListener(Command_Say, "say_team");
 }
@@ -323,6 +324,35 @@ void LogRoundWin(int winningTeam, const char[] teamAction, const char[] aliveAct
 		LogToGame("\"%s<%d><%s><%s>\" triggered \"%s\"",
 			playerName, GetClientUserId(i), playerAuth, teamName, aliveAction);
 	}
+}
+
+public void Event_ClientSoundPlayer(Event event, const char[] name, bool dontBroadcast)
+{
+	char sound[64];
+	event.GetString("sound", sound, sizeof(sound));
+
+	// ZPlayer.Panic fires via clientsound_player when a survivor panics.
+	// Confirmed via sound monitor log (07/01/2026). Logged as a zero-point
+	// player action for statistical tracking only.
+	if (!StrEqual(sound, "ZPlayer.Panic", false))
+	{
+		return;
+	}
+
+	int client = event.GetInt("entindex");
+
+	if (client < 1 || client > MaxClients || !IsClientInGame(client))
+	{
+		return;
+	}
+
+	char playerName[MAX_NAME_LENGTH], playerAuth[32], playerTeam[32];
+	GetClientName(client, playerName, sizeof(playerName));
+	GetClientAuthId(client, AuthId_Steam2, playerAuth, sizeof(playerAuth));
+	GetTeamNameForClient(client, playerTeam, sizeof(playerTeam));
+
+	LogToGame("\"%s<%d><%s><%s>\" triggered \"zps_panic\"",
+		playerName, GetClientUserId(client), playerAuth, playerTeam);
 }
 
 public Action Command_Say(int client, const char[] command, int args)
