@@ -19,7 +19,7 @@
 // HLstatsZ daemon's own source (doEvent_EnterGame in
 // HLstats_EventHandlers.plib, github.com/SnipeZilla/HLSTATS-2).
 
-#define PLUGIN_VERSION "1.9.2"
+#define PLUGIN_VERSION "1.9.3"
 #define MAX_TEAMS 8
 #define TEAM_SURVIVORS 2
 #define TEAM_ZOMBIES 3
@@ -29,7 +29,7 @@ char g_sTeamName[MAX_TEAMS][32];
 public Plugin myinfo =
 {
 	name        = "DNAGames ZPS HLstatsX Helper",
-	author      = "claude.ai guided by DNA.styx",
+	author      = "Claude.ai guided by DNA.styx",
 	description = "Fixes missing kill, chat, connect/IP, disconnect, and join logging for HLstatsX on Zombie Panic: Source.",
 	version     = PLUGIN_VERSION,
 	url         = "https://github.com/DNA-styx/ZPS-Helper-Plugins"
@@ -206,11 +206,11 @@ public void Event_PlayerFeed(Event event, const char[] name, bool dontBroadcast)
 
 			// Additional "triggered" line so these deaths also show as
 			// zero-reward PlayerActions on the Actions page, matching the
-			// zps_panic/zps_infected_player pattern. Requires matching
-			// hlstats_Actions rows (game='zps', code=zps_fall/zps_drown/
-			// zps_burn) - deliberately reuses the same code strings as the
-			// hlstats_Weapons entries since Actions and Weapons are
-			// separate tables with no naming conflict.
+			// zps_panic pattern. Requires matching hlstats_Actions rows
+			// (game='zps', code=zps_fall/zps_drown/zps_burn) - deliberately
+			// reuses the same code strings as the hlstats_Weapons entries
+			// since Actions and Weapons are separate tables with no naming
+			// conflict.
 			LogToGame("\"%s<%d><%s><%s>\" triggered \"%s\"",
 				victimName, GetClientUserId(victim), victimAuth, victimTeam,
 				suicideWeapon);
@@ -248,13 +248,22 @@ public void Event_PlayerFeed(Event event, const char[] name, bool dontBroadcast)
 
 	// When weapon is "infected" and death is false, the carrier has tagged a
 	// survivor with infection - the survivor is still alive and may self-heal.
-	// Log as a player action rather than a kill (confirmed via feed logger:
-	// infected events with death=0 are always followed by a separate carrierarms
-	// event with death=1 if the survivor actually dies from the attack).
+	// Logged as a Player-vs-Player action ("triggered X against Y") rather
+	// than a plain player action, since hlstats_Actions.zps_infected_player
+	// is now for_PlayerPlayerActions=1 / for_PlayerActions=0 (v1.9.3). The
+	// daemon's hlstats.pl "triggered ... against ..." regex requires both
+	// full player strings (confirmed against HLstats_EventHandlers.plib
+	// doEvent_PlayerPlayerAction call path).
 	if (StrEqual(weapon, "infected") && !death)
 	{
-		LogToGame("\"%s<%d><%s><%s>\" triggered \"zps_infected_player\"",
-			attackerName, GetClientUserId(attacker), attackerAuth, attackerTeam);
+		char victimName[MAX_NAME_LENGTH], victimAuth[32], victimTeam[32];
+		GetClientName(victim, victimName, sizeof(victimName));
+		GetClientAuthId(victim, AuthId_Steam2, victimAuth, sizeof(victimAuth));
+		GetTeamNameForClient(victim, victimTeam, sizeof(victimTeam));
+
+		LogToGame("\"%s<%d><%s><%s>\" triggered \"zps_infected_player\" against \"%s<%d><%s><%s>\"",
+			attackerName, GetClientUserId(attacker), attackerAuth, attackerTeam,
+			victimName, GetClientUserId(victim), victimAuth, victimTeam);
 		return;
 	}
 
