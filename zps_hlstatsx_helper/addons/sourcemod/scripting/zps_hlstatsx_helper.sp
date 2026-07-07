@@ -19,7 +19,7 @@
 // HLstatsZ daemon's own source (doEvent_EnterGame in
 // HLstats_EventHandlers.plib, github.com/SnipeZilla/HLSTATS-2).
 
-#define PLUGIN_VERSION "1.9.3"
+#define PLUGIN_VERSION "1.9.4"
 #define MAX_TEAMS 8
 #define TEAM_SURVIVORS 2
 #define TEAM_ZOMBIES 3
@@ -171,10 +171,14 @@ public void Event_PlayerFeed(Event event, const char[] name, bool dontBroadcast)
 	bool headshot = event.GetBool("headshot");
 
 	// Environmental deaths: attacker=0 means a world/map source killed the player.
-	// Only FALL (dmgbits 32), DROWN (dmgbits 16384), and BURN (dmgbits 8 or
-	// 268435456) are logged. trigger_hurt generic (dmgbits 0) and crush
-	// (dmgbits 1) are skipped — confirmed via feed logger analysis.
-	// entityflame (268435456) is ZPS-specific fire damage, mapped to zps_burn.
+	// FALL (dmgbits 32), DROWN (dmgbits 16384), BURN (dmgbits 8 or 268435456),
+	// and EXPLODING_BARREL (dmgbits exactly 134217792) are logged. trigger_hurt
+	// generic (dmgbits 0) and crush (dmgbits 1) are skipped — confirmed via
+	// feed logger analysis. entityflame (268435456) is ZPS-specific fire
+	// damage, mapped to zps_burn. dmgbits 134217792 is a confirmed weapon=
+	// "physics" self-kill (exploding barrel) — matched by exact value, not
+	// bitmask, since only one sample has been observed to date and the
+	// underlying bit composition hasn't been confirmed as a stable signature.
 	if (victim > 0 && attacker <= 0 && death && IsClientInGame(victim))
 	{
 		int dmgbits = event.GetInt("dmgbits");
@@ -192,6 +196,10 @@ public void Event_PlayerFeed(Event event, const char[] name, bool dontBroadcast)
 		{
 			strcopy(suicideWeapon, sizeof(suicideWeapon), "zps_burn");
 		}
+		else if (dmgbits == 134217792)
+		{
+			strcopy(suicideWeapon, sizeof(suicideWeapon), "zps_exploding_barrel");
+		}
 
 		if (suicideWeapon[0] != '\0')
 		{
@@ -207,7 +215,7 @@ public void Event_PlayerFeed(Event event, const char[] name, bool dontBroadcast)
 			// Additional "triggered" line so these deaths also show as
 			// zero-reward PlayerActions on the Actions page, matching the
 			// zps_panic pattern. Requires matching hlstats_Actions rows
-			// (game='zps', code=zps_fall/zps_drown/zps_burn) - deliberately
+			// (game='zps', code=zps_fall/zps_drown/zps_burn/zps_exploding_barrel) - deliberately
 			// reuses the same code strings as the hlstats_Weapons entries
 			// since Actions and Weapons are separate tables with no naming
 			// conflict.
