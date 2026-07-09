@@ -4,7 +4,7 @@
 #pragma semicolon 1
 #pragma newdecls required
 
-#define PLUGIN_VERSION      "0.9"
+#define PLUGIN_VERSION      "0.11"
 
 #define TEAM_SURVIVOR        2
 #define TEAM_ZOMBIE           3
@@ -28,7 +28,7 @@ public Plugin myinfo =
 {
     name        = "ZPS Bot Panic",
     author      = "Claude.ai guided by DNA.styx",
-    description = "Makes survivor bots use the ZPS panic ability in emergencies",
+    description = "Makes NavBot survivor bots use the ZPS panic ability in emergencies",
     version     = PLUGIN_VERSION,
     url         = "https://github.com/DNA-styx/ZPS-Helper-Plugins"
 };
@@ -109,6 +109,12 @@ public void OnPluginStart()
 
     AutoExecConfig(true, "zps_bot_panic");
 
+    // Force this to the compiled version regardless of a stale .cfg line
+    // or an engine-persisted value from a previous load -- CreateConVar()
+    // does not reset an already-registered cvar's value, so this is the
+    // only reliable way to keep it accurate across plugin reloads.
+    g_cvVersion.SetString(PLUGIN_VERSION);
+
     char version[16];
     g_cvVersion.GetString(version, sizeof(version));
     LogMessage("ZPS Bot Panic v%s loaded.", version);
@@ -181,9 +187,9 @@ public Action Timer_CheckBots(Handle timer)
         if (!healthOk || !ammoOk || !zombieClose)
             continue;
 
-        SDKCall(g_hPanicCall, client);
+        FakeClientCommand(client, "dopanic");
         g_NextPanicAllowed[client] = now + cooldown;
-        LogDebug("%s: PANIC triggered (direct call), next allowed at +%.1fs", clientName, cooldown);
+        LogDebug("%s: PANIC triggered (dopanic cmd), next allowed at +%.1fs", clientName, cooldown);
     }
 
     return Plugin_Continue;

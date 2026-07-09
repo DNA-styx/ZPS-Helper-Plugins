@@ -5,7 +5,6 @@ Makes NavBot survivor bots use the ZPS panic ability when low health, low ammo, 
 ## Install
 
 1. Copy `zps_bot_panic.smx` to `addons/sourcemod/plugins/`
-2. Copy `zps_bot_panic.games.txt` to `addons/sourcemod/gamedata/`
 
 ## ConVars
 
