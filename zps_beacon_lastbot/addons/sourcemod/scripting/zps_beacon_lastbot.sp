@@ -3,13 +3,11 @@
 
 #include <sourcemod>
 
-#define PLUGIN_VERSION "1.5.2"
+#define PLUGIN_VERSION "1.6.1"
 
 #define TEAM_SURVIVORS 2
 
 bool g_bLastAliveActive = false;
-bool g_bBeaconOn = false;
-int g_iBeaconUserId = -1;
 int g_iPrevShowActivity = -1;
 
 ConVar g_hShowActivity;
@@ -18,9 +16,9 @@ public Plugin myinfo =
 {
     name = "[ZPS] Beacon Last Bot",
     author = "Claude.ai guided by DNA.styx",
-    description = "Beacons the last Survivor if it's a bot.",
+    description = "Beacons the Survivor bot.",
     version = PLUGIN_VERSION,
-    url = ""
+    url = "https://github.com/DNA-styx/ZPS-Helper-Plugins"
 };
 
 public void OnPluginStart()
@@ -48,14 +46,7 @@ public void Event_ClientSound(Event event, const char[] name, bool dontBroadcast
 
     if (StrContains(sSound, "Round_Starting", false) != -1)
     {
-        if (g_bBeaconOn)
-        {
-            ToggleBeaconQuiet(g_iBeaconUserId);
-        }
-
         g_bLastAliveActive = false;
-        g_bBeaconOn = false;
-        g_iBeaconUserId = -1;
     }
 }
 
@@ -84,19 +75,10 @@ void CheckLastPlayer(any data)
         PrintToChatAll("\x05[NAV]\x01 Last bot beaconed");
 
         ToggleBeaconQuiet(userid);
-        g_bBeaconOn = true;
-        g_iBeaconUserId = userid;
     }
     else if (!shouldBeActive && g_bLastAliveActive)
     {
         g_bLastAliveActive = false;
-
-        if (g_bBeaconOn)
-        {
-            ToggleBeaconQuiet(g_iBeaconUserId);
-            g_bBeaconOn = false;
-            g_iBeaconUserId = -1;
-        }
     }
 }
 
