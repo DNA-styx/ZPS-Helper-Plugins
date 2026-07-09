@@ -28,7 +28,7 @@ public Plugin myinfo =
 {
     name        = "ZPS Bot Panic",
     author      = "Claude.ai guided by DNA.styx",
-    description = "Makes NavBot survivor bots use the ZPS panic ability in emergencies",
+    description = "Makes survivor bots use the ZPS panic ability in emergencies",
     version     = PLUGIN_VERSION,
     url         = "https://github.com/DNA-styx/ZPS-Helper-Plugins"
 };
