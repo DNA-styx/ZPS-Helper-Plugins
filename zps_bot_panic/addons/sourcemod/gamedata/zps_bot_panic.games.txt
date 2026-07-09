@@ -1,0 +1,23 @@
+// zps_bot_panic.games.txt
+// Signature format follows the convention used in ZPSUTIL's zpsutils.games.txt
+// (DNA-styx reference project, not installed on this server -- this file is
+// self-contained and does not depend on it).
+//
+// CZP_Player::Panic() confirmed via:
+//   nm server_srv.so | grep 00b99c90
+//   -> 00b99c90 t _ZN10CZP_Player5PanicEv
+
+"Games"
+{
+    "zps"
+    {
+        "Signatures"
+        {
+            "CZP_Player::Panic"
+            {
+                "library"   "server"
+                "linux"     "@_ZN10CZP_Player5PanicEv"
+            }
+        }
+    }
+}
