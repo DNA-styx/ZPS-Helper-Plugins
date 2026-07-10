@@ -10,7 +10,7 @@
 #endif
 #include <navbot>
 
-#define PLUGIN_VERSION "2.3.0"
+#define PLUGIN_VERSION "3.0.0"
 
 #define TEAM_SURVIVOR 2
 
@@ -19,20 +19,20 @@ DynamicDetour g_ddVoiceMenu;
 
 public Plugin myinfo =
 {
-    name = "ZPS Bot Drop Weapon",
+    name = "ZPS NavBot Voicedrop",
     author = "Claude.ai guided by DNA.styx",
-    description = "The survivor bot a player is aiming at (or nearest if not aiming at one) drops its weapon on #VOICE_NEED_WEAPON",
+    description = "A Navbot will drops its weapon when a player uses #VOICE_NEED_WEAPON",
     version = PLUGIN_VERSION,
     url = "https://github.com/DNA-styx/ZPS-Helper-Plugins"
 };
 
 public void OnPluginStart()
 {
-    CreateConVar("zps_bot_drop_weapon_version", PLUGIN_VERSION, "ZPS Bot Drop Weapon version", FCVAR_NOTIFY|FCVAR_DONTRECORD);
+    CreateConVar("zps_navbot_voicedrop_version", PLUGIN_VERSION, "ZPS NavBot Voicedrop version", FCVAR_NOTIFY|FCVAR_DONTRECORD);
 
-    g_hGameData = new GameData("zps_bot_drop_weapon.games");
+    g_hGameData = new GameData("zps_navbot_voicedrop.games");
     if (g_hGameData == null)
-        SetFailState("Failed to load gamedata file zps_bot_drop_weapon.games.txt");
+        SetFailState("Failed to load gamedata file zps_navbot_voicedrop.games.txt");
 
     g_ddVoiceMenu = DynamicDetour.FromConf(g_hGameData, "OnPlayerVoiceMenu");
     if (g_ddVoiceMenu == null)
@@ -88,7 +88,7 @@ void DropTargetBotWeapon(int caller)
     char botName[MAX_NAME_LENGTH];
     GetClientName(target, botName, sizeof(botName));
 
-    PrintToChat(caller, "%s has dropped you a weapon.", botName);
+    PrintToChat(caller, "\x05[NAV]\x01 %s has dropped you a weapon.", botName);
     LogMessage("#VOICE_NEED_WEAPON triggered by %s - targeted bot %s queued dropweapon", callerName, botName);
 }
 
