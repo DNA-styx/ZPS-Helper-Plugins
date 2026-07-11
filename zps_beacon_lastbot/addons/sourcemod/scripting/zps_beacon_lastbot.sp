@@ -3,7 +3,7 @@
 
 #include <sourcemod>
 
-#define PLUGIN_VERSION "1.6.1"
+#define PLUGIN_VERSION "2.0.0"
 
 #define TEAM_SURVIVORS 2
 
@@ -16,7 +16,7 @@ public Plugin myinfo =
 {
     name = "[ZPS] Beacon Last Bot",
     author = "Claude.ai guided by DNA.styx",
-    description = "Beacons the Survivor bot.",
+    description = "Beacons the last Survivor bot.",
     version = PLUGIN_VERSION,
     url = "https://github.com/DNA-styx/ZPS-Helper-Plugins"
 };
@@ -27,30 +27,10 @@ public void OnPluginStart()
 
     g_hShowActivity = FindConVar("sm_show_activity");
 
-    HookEvent("player_feed", Event_PlayerFeed);
-    HookEvent("clientsound", Event_ClientSound, EventHookMode_Post);
+    CreateTimer(15.0, Timer_CheckLastPlayer, _, TIMER_REPEAT);
 }
 
-public void Event_PlayerFeed(Event event, const char[] name, bool dontBroadcast)
-{
-    if (!event.GetBool("death"))
-        return;
-
-    RequestFrame(CheckLastPlayer);
-}
-
-public void Event_ClientSound(Event event, const char[] name, bool dontBroadcast)
-{
-    char sSound[64];
-    event.GetString("sound", sSound, sizeof(sSound));
-
-    if (StrContains(sSound, "Round_Starting", false) != -1)
-    {
-        g_bLastAliveActive = false;
-    }
-}
-
-void CheckLastPlayer(any data)
+public Action Timer_CheckLastPlayer(Handle timer)
 {
     int aliveCount = 0;
     int aliveClient = -1;
@@ -80,6 +60,8 @@ void CheckLastPlayer(any data)
     {
         g_bLastAliveActive = false;
     }
+
+    return Plugin_Continue;
 }
 
 void ToggleBeaconQuiet(int userid)
