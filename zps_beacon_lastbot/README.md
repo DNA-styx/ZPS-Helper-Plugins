@@ -17,3 +17,6 @@ one alive for an extended period. This plugin makes that bot easy to find.
 ## Installation
 
 Place `zps_beacon_lastbot.smx` in `addons/sourcemod/plugins/`.
+
+
+<img width="367" height="400" alt="image" src="https://github.com/user-attachments/assets/93d7f689-f9fd-4bfe-90af-495f09f3a29e" />
