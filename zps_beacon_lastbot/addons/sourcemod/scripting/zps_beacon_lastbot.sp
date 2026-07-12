@@ -3,7 +3,7 @@
 
 #include <sourcemod>
 
-#define PLUGIN_VERSION "2.0.0"
+#define PLUGIN_VERSION "2.0.1"
 
 #define TEAM_SURVIVORS 2
 
@@ -27,7 +27,20 @@ public void OnPluginStart()
 
     g_hShowActivity = FindConVar("sm_show_activity");
 
+    HookEvent("clientsound", Event_ClientSound, EventHookMode_Post);
+
     CreateTimer(15.0, Timer_CheckLastPlayer, _, TIMER_REPEAT);
+}
+
+public void Event_ClientSound(Event event, const char[] name, bool dontBroadcast)
+{
+    char sSound[64];
+    event.GetString("sound", sSound, sizeof(sSound));
+
+    if (StrContains(sSound, "Round_Starting", false) != -1)
+    {
+        g_bLastAliveActive = false;
+    }
 }
 
 public Action Timer_CheckLastPlayer(Handle timer)
