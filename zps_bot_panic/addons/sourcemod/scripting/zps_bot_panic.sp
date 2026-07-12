@@ -4,7 +4,7 @@
 #pragma semicolon 1
 #pragma newdecls required
 
-#define PLUGIN_VERSION      "0.14"
+#define PLUGIN_VERSION      "0.15"
 
 #define TEAM_SURVIVOR        2
 #define TEAM_ZOMBIE           3
@@ -16,6 +16,7 @@ ConVar g_cvEnabled;
 ConVar g_cvHealthPct;
 ConVar g_cvAmmoThreshold;
 ConVar g_cvZombieRadius;
+ConVar g_cvZombieHeight;
 ConVar g_cvCooldown;
 
 float g_NextPanicAllowed[MAXPLAYERS + 1];
@@ -62,7 +63,14 @@ public void OnPluginStart()
     g_cvZombieRadius = CreateConVar(
         "zps_bot_panic_zombie_radius",
         "300.0",
-        "Distance (units) within which a zombie counts as an immediate threat.",
+        "Horizontal distance (units) within which a zombie counts as an immediate threat.",
+        FCVAR_PROTECTED
+    );
+
+    g_cvZombieHeight = CreateConVar(
+        "zps_bot_panic_zombie_height",
+        "96.0",
+        "Maximum vertical separation (units) for a zombie to still count as an immediate threat (keeps zombies on other floors from triggering panic).",
         FCVAR_PROTECTED
     );
 
@@ -94,6 +102,7 @@ public Action Timer_CheckBots(Handle timer)
     float healthPct      = g_cvHealthPct.FloatValue;
     int   ammoThreshold  = g_cvAmmoThreshold.IntValue;
     float zombieRadiusSq = g_cvZombieRadius.FloatValue * g_cvZombieRadius.FloatValue;
+    float zombieHeight   = g_cvZombieHeight.FloatValue;
     float cooldown       = g_cvCooldown.FloatValue;
 
     for (int client = 1; client <= MaxClients; client++)
@@ -113,7 +122,7 @@ public Action Timer_CheckBots(Handle timer)
         int maxHealth = GetEntProp(client, Prop_Data, "m_iMaxHealth");
         float curHealthPct = (maxHealth > 0) ? (float(GetClientHealth(client)) / float(maxHealth)) * 100.0 : 0.0;
         int curAmmo = GetTotalAmmo(client);
-        bool zombieClose = IsZombieNearby(client, zombieRadiusSq);
+        bool zombieClose = IsZombieNearby(client, zombieRadiusSq, zombieHeight);
 
         bool healthOk = curHealthPct <= healthPct;
         bool ammoOk   = curAmmo <= ammoThreshold;
@@ -173,7 +182,7 @@ int GetTotalAmmo(int client)
     return totalAmmo;
 }
 
-bool IsZombieNearby(int client, float radiusSq)
+bool IsZombieNearby(int client, float radiusSq, float maxHeight)
 {
     float clientPos[3];
     GetClientAbsOrigin(client, clientPos);
@@ -189,7 +198,14 @@ bool IsZombieNearby(int client, float radiusSq)
         float zombiePos[3];
         GetClientAbsOrigin(i, zombiePos);
 
-        if (GetVectorDistance(clientPos, zombiePos, true) <= radiusSq)
+        if (FloatAbs(clientPos[2] - zombiePos[2]) > maxHeight)
+            continue;
+
+        float dx = clientPos[0] - zombiePos[0];
+        float dy = clientPos[1] - zombiePos[1];
+        float horizontalDistSq = (dx * dx) + (dy * dy);
+
+        if (horizontalDistSq <= radiusSq)
             return true;
     }
 
