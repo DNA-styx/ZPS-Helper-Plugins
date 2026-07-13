@@ -10,7 +10,7 @@
 #endif
 #include <navbot>
 
-#define PLUGIN_VERSION "3.0.0"
+#define PLUGIN_VERSION "3.0.2"
 
 #define TEAM_SURVIVOR 2
 
@@ -21,7 +21,7 @@ public Plugin myinfo =
 {
     name = "ZPS NavBot Voicedrop",
     author = "Claude.ai guided by DNA.styx",
-    description = "A Navbot will drops its weapon when a player uses #VOICE_NEED_WEAPON",
+    description = "A Navbot drops its weapon when a player uses #VOICE_NEED_WEAPON",
     version = PLUGIN_VERSION,
     url = "https://github.com/DNA-styx/ZPS-Helper-Plugins"
 };
@@ -155,6 +155,7 @@ public Action Timer_SelectBestWeapon(Handle timer, any data)
         return Plugin_Stop;
 
     Address ptr = bot.GetInventoryInterface();
+    NavBotInventoryInterface.RequestUpdate(ptr);
     NavBotInventoryInterface.SelectBestWeapon(ptr);
 
     return Plugin_Stop;
