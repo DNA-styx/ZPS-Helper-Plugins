@@ -6,7 +6,7 @@
 #include <dhooks>
 #include <navbot>
 
-#define PLUGIN_VERSION "0.1.11"
+#define PLUGIN_VERSION "0.1.12"
 
 ConVar g_hCvarPollInterval;
 ConVar g_hCvarVerbose;
@@ -33,6 +33,7 @@ enum struct DoorInfo
 ArrayList g_hDoors = null;
 Handle g_hPollTimer = null;
 DynamicHook g_hAcceptInputHook = null;
+bool g_bBlockersStarted = false;
 
 public Plugin myinfo =
 {
@@ -202,6 +203,7 @@ public void OnNavBotNavMeshLoaded()
 public void OnNavBotNavMeshDestroyed()
 {
 	delete g_hPollTimer;
+	g_bBlockersStarted = false;
 
 	if (g_hDoors == null)
 	{
@@ -248,6 +250,7 @@ void ReportIssue(const char[] fmt, any ...)
 void LoadDoorConfig()
 {
 	g_hDoors.Clear();
+	g_bBlockersStarted = false;
 
 	char mapName[64];
 	GetCurrentMap(mapName, sizeof(mapName));
@@ -450,10 +453,12 @@ int FindEntityByTargetname(const char[] targetname)
 
 void StartAllDoorBlockers()
 {
-	if (g_hDoors == null)
+	if (g_hDoors == null || g_bBlockersStarted)
 	{
 		return;
 	}
+
+	g_bBlockersStarted = true;
 
 	int count = g_hDoors.Length;
 
