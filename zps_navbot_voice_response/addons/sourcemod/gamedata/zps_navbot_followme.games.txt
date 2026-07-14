@@ -1,0 +1,36 @@
+"Games"
+{
+	"zps"
+	{
+		"Signatures"
+		{
+			"CZP_Player::VoiceMenu"
+			{
+				"library"	"server"
+				"linux"		"@_ZN10CZP_Player9VoiceMenuEPKcS1_"
+			}
+		}
+		"Functions"
+		{
+			"OnPlayerVoiceMenu"
+			{
+				"signature"	"CZP_Player::VoiceMenu"
+				"hooktype"	"entity"
+				"callconv"	"thiscall"
+				"return"	"void"
+				"this"		"entity"
+				"arguments"
+				{
+					"szInternalText"
+					{
+						"type"	"charptr"
+					}
+					"szExternalText"
+					{
+						"type"	"charptr"
+					}
+				}
+			}
+		}
+	}
+}
