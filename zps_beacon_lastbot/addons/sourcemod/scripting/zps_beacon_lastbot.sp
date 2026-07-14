@@ -3,11 +3,13 @@
 
 #include <sourcemod>
 
-#define PLUGIN_VERSION "2.0.1"
+#define PLUGIN_VERSION "2.1.0"
 
 #define TEAM_SURVIVORS 2
+#define ROUND_START_DELAY 10.0
 
 bool g_bLastAliveActive = false;
+bool g_bMonitoring = false;
 int g_iPrevShowActivity = -1;
 
 ConVar g_hShowActivity;
@@ -27,6 +29,8 @@ public void OnPluginStart()
 
     g_hShowActivity = FindConVar("sm_show_activity");
 
+    g_bMonitoring = true;
+
     HookEvent("clientsound", Event_ClientSound, EventHookMode_Post);
 
     CreateTimer(15.0, Timer_CheckLastPlayer, _, TIMER_REPEAT);
@@ -40,11 +44,23 @@ public void Event_ClientSound(Event event, const char[] name, bool dontBroadcast
     if (StrContains(sSound, "Round_Starting", false) != -1)
     {
         g_bLastAliveActive = false;
+        g_bMonitoring = false;
+
+        CreateTimer(ROUND_START_DELAY, Timer_EnableMonitoring);
     }
+}
+
+public Action Timer_EnableMonitoring(Handle timer)
+{
+    g_bMonitoring = true;
+    return Plugin_Stop;
 }
 
 public Action Timer_CheckLastPlayer(Handle timer)
 {
+    if (!g_bMonitoring)
+        return Plugin_Continue;
+
     int aliveCount = 0;
     int aliveClient = -1;
 
