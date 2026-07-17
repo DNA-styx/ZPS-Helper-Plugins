@@ -3,7 +3,7 @@
 
 #include <sourcemod>
 
-#define PLUGIN_VERSION "2.1.0"
+#define PLUGIN_VERSION "2.1.1"
 
 #define TEAM_SURVIVORS 2
 #define ROUND_START_DELAY 10.0
@@ -34,6 +34,12 @@ public void OnPluginStart()
     HookEvent("clientsound", Event_ClientSound, EventHookMode_Post);
 
     CreateTimer(15.0, Timer_CheckLastPlayer, _, TIMER_REPEAT);
+}
+
+public void OnMapStart()
+{
+    g_bLastAliveActive = false;
+    g_bMonitoring = false;
 }
 
 public void Event_ClientSound(Event event, const char[] name, bool dontBroadcast)
