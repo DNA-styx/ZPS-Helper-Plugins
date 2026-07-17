@@ -1,8 +1,7 @@
 /**
  * zps_navbot_objectives.sp
  * Directs NavBot bots through map-defined objectives via ordered per-team
- * command sequences (task chaining). No radius/tolerance on MOVE_TO arrival -
- * direct distance check, confirmed reliable via live testing.
+ * command sequences.
  * Config: configs/zps_navbot_objectives/<map>.cfg
  * Author: Claude.ai guided by DNA.styx
  */
@@ -15,7 +14,7 @@
 #include <sdktools_entoutput>
 #include <navbot>
 
-#define PLUGIN_VERSION "0.3.3"
+#define PLUGIN_VERSION "0.4.5"
 #define CFG_SCHEMA_VERSION 3
 
 #define TEAM_SURVIVOR 2
@@ -25,7 +24,7 @@
 #define MAX_TARGETS_PER_OBJECTIVE 6
 #define MAX_COMMANDS_PER_TASK     4
 
-#define ORIGIN_TOLERANCE 16.0 // entity resolution only - matching name+type+origin to the live entity
+#define ORIGIN_TOLERANCE 16.0
 
 enum struct TargetData
 {
@@ -39,8 +38,8 @@ enum struct TargetData
 
 enum struct CommandStep
 {
-    int   cmdType; // NavBotPluginCommandTypes int, or -1 if invalid
-    float fParam;  // WAIT duration only, unused for other types
+    int   cmdType;
+    float fParam;
 }
 
 enum struct TeamTaskData
@@ -61,7 +60,7 @@ enum struct ObjectiveData
 
 ObjectiveData g_Objectives[MAX_OBJECTIVES];
 int           g_iObjectiveCount = 0;
-int           g_iCurrentObjective = -1; // -1 = not started / all complete
+int           g_iCurrentObjective = -1;
 
 ConVar g_cvEnabled;
 ConVar g_cvPollInterval;
@@ -69,18 +68,14 @@ ConVar g_cvRoundStartDelay;
 
 bool   g_bConfigLoaded = false;
 bool   g_bPollingAllowed = false;
-bool   g_bGateLogged = false;
 Handle g_hRoundStartTimer = null;
 
-// Per-bot state
-int   g_iBotObjective[MAXPLAYERS + 1];     // -1 = untracked
+int   g_iBotObjective[MAXPLAYERS + 1];
 bool  g_bBotZombie[MAXPLAYERS + 1];
-int   g_iBotCommandIndex[MAXPLAYERS + 1];  // position within the team's command sequence
-int   g_iBotTargetIndex[MAXPLAYERS + 1];   // sticky target, resolved once at task entry
-float g_fBotCommandStart[MAXPLAYERS + 1];  // for WAIT timing
-bool  g_bBotDone[MAXPLAYERS + 1];          // finished the whole sequence, stays parked
-
-ArrayList g_hValidationReport = null;      // queued validation lines, flushed at round start
+int   g_iBotCommandIndex[MAXPLAYERS + 1];
+int   g_iBotTargetIndex[MAXPLAYERS + 1];
+float g_fBotCommandStart[MAXPLAYERS + 1];
+bool  g_bBotDone[MAXPLAYERS + 1];
 
 public Plugin myinfo =
 {
@@ -101,37 +96,11 @@ public void OnPluginStart()
     HookEvent("clientsound", Event_ClientSound);
 }
 
-// Chat only, always on, [ZPO] prefix - used for every message this plugin sends.
 void ZpoMsg(const char[] format, any ...)
 {
     char sMsg[256];
     VFormat(sMsg, sizeof(sMsg), format, 2);
     PrintToChatAll("[ZPO] %s", sMsg);
-}
-
-// Queues a validation report line instead of printing immediately - map-load-time
-// messages are otherwise likely to be missed if no player is connected yet.
-// Flushed once polling is allowed (round start).
-void QueueValidationMsg(const char[] format, any ...)
-{
-    char sMsg[256];
-    VFormat(sMsg, sizeof(sMsg), format, 2);
-    g_hValidationReport.PushString(sMsg);
-}
-
-void FlushValidationReport()
-{
-    if (g_hValidationReport == null)
-        return;
-
-    char sMsg[256];
-    for (int i = 0; i < g_hValidationReport.Length; i++)
-    {
-        g_hValidationReport.GetString(i, sMsg, sizeof(sMsg));
-        ZpoMsg("%s", sMsg);
-    }
-
-    delete g_hValidationReport;
 }
 
 public void Event_ClientSound(Event event, const char[] name, bool dontBroadcast)
@@ -147,15 +116,11 @@ public void Event_ClientSound(Event event, const char[] name, bool dontBroadcast
         g_hRoundStartTimer = null;
     }
 
-    // Round restarts on the same map don't go through OnMapStart, so objective
-    // progress must be reset here too.
     if (g_bConfigLoaded)
         ResetObjectiveProgress();
 
     g_bPollingAllowed = false;
     g_hRoundStartTimer = CreateTimer(g_cvRoundStartDelay.FloatValue, Timer_RoundStartDelay, _, TIMER_FLAG_NO_MAPCHANGE);
-
-    ZpoMsg("Round_Starting detected, delay=%.1f", g_cvRoundStartDelay.FloatValue);
 }
 
 void ResetObjectiveProgress()
@@ -181,11 +146,7 @@ public Action Timer_RoundStartDelay(Handle timer)
 {
     g_hRoundStartTimer = null;
     g_bPollingAllowed = true;
-    g_bGateLogged = false;
-
     ZpoMsg("Polling enabled.");
-    FlushValidationReport();
-
     return Plugin_Stop;
 }
 
@@ -193,7 +154,6 @@ public void OnMapStart()
 {
     g_bConfigLoaded = false;
     g_bPollingAllowed = false;
-    g_bGateLogged = false;
     g_hRoundStartTimer = null;
     g_iObjectiveCount = 0;
     g_iCurrentObjective = -1;
@@ -204,11 +164,7 @@ public void OnMapStart()
         g_bBotDone[client] = false;
     }
 
-    if (g_hValidationReport != null)
-        delete g_hValidationReport;
-    g_hValidationReport = new ArrayList(ByteCountToCells(256));
-
-    if (!LoadAndValidateConfig())
+    if (!LoadConfig())
         return;
 
     g_bConfigLoaded = true;
@@ -218,11 +174,7 @@ public void OnMapStart()
     CreateTimer(g_cvPollInterval.FloatValue, Timer_PollObjective, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
 }
 
-// ---------------------------------------------------------------------------
-// Config loading and validation
-// ---------------------------------------------------------------------------
-
-bool LoadAndValidateConfig()
+bool LoadConfig()
 {
     char sMap[PLATFORM_MAX_PATH];
     GetCurrentMap(sMap, sizeof(sMap));
@@ -236,44 +188,36 @@ bool LoadAndValidateConfig()
     KeyValues kv = new KeyValues("zps_navbot_objectives");
     if (!kv.ImportFromFile(sPath))
     {
-        QueueValidationMsg("Failed to parse %s.cfg - check syntax.", sMap);
+        ZpoMsg("Failed to parse %s.cfg.", sMap);
         delete kv;
         return false;
     }
 
-    int iCfgVersion = kv.GetNum("version", -1);
-    if (iCfgVersion != CFG_SCHEMA_VERSION)
+    if (kv.GetNum("version", -1) != CFG_SCHEMA_VERSION)
     {
-        QueueValidationMsg("%s.cfg schema version %d does not match expected %d - refusing to load.",
-            sMap, iCfgVersion, CFG_SCHEMA_VERSION);
+        ZpoMsg("%s.cfg schema version mismatch - expected %d.", sMap, CFG_SCHEMA_VERSION);
         delete kv;
         return false;
     }
 
-    int iProblems = 0;
-
-    if (!kv.GotoFirstSubKey(true))
+    if (kv.GotoFirstSubKey(true))
     {
-        QueueValidationMsg("%s.cfg has no objectives.", sMap);
-        delete kv;
-        return false;
+        do
+        {
+            char sSectionName[32];
+            kv.GetSectionName(sSectionName, sizeof(sSectionName));
+            if (!StrEqual(sSectionName, "objective") || g_iObjectiveCount >= MAX_OBJECTIVES)
+                continue;
+
+            ParseObjective(kv, g_iObjectiveCount);
+            g_iObjectiveCount++;
+
+        } while (kv.GotoNextKey(true));
     }
-
-    do
-    {
-        char sSectionName[32];
-        kv.GetSectionName(sSectionName, sizeof(sSectionName));
-        if (!StrEqual(sSectionName, "objective") || g_iObjectiveCount >= MAX_OBJECTIVES)
-            continue;
-
-        ParseObjective(kv, g_iObjectiveCount, iProblems);
-        g_iObjectiveCount++;
-
-    } while (kv.GotoNextKey(true));
 
     delete kv;
 
-    // Resolve and validate every target across every objective.
+    int missing = 0;
     for (int o = 0; o < g_iObjectiveCount; o++)
     {
         for (int t = 0; t < g_Objectives[o].iTargetCount; t++)
@@ -286,42 +230,34 @@ bool LoadAndValidateConfig()
 
             if (entity == -1)
             {
-                QueueValidationMsg("Objective %d target %d ('%s' near %.1f,%.1f,%.1f) not found.",
-                    o + 1, t + 1, g_Objectives[o].targets[t].sName,
-                    g_Objectives[o].targets[t].fOrigin[0], g_Objectives[o].targets[t].fOrigin[1], g_Objectives[o].targets[t].fOrigin[2]);
-                iProblems++;
+                ZpoMsg("Objective %d target %d ('%s') not found.", o + 1, t + 1, g_Objectives[o].targets[t].sName);
+                missing++;
                 continue;
             }
 
             g_Objectives[o].targets[t].iEntity = entity;
-        }
-
-        if (!g_Objectives[o].survivorTask.bConfigured && !g_Objectives[o].zombieTask.bConfigured)
-        {
-            QueueValidationMsg("Objective %d has no survivor or zombie task configured.", o + 1);
-            iProblems++;
+            ZpoMsg("Objective %d target %d ('%s') resolved to entity %d.", o + 1, t + 1, g_Objectives[o].targets[t].sName, entity);
         }
     }
 
-    if (iProblems > 0)
+    if (missing > 0)
     {
-        QueueValidationMsg("%s.cfg load FAILED: %d problem(s) found. Bots will use default AI until fixed.", sMap, iProblems);
+        ZpoMsg("%s.cfg load failed: %d target(s) not found.", sMap, missing);
         return false;
     }
 
-    QueueValidationMsg("%s.cfg loaded OK (schema v%d): %d objective(s).", sMap, CFG_SCHEMA_VERSION, g_iObjectiveCount);
+    ZpoMsg("%s.cfg loaded: %d objective(s).", sMap, g_iObjectiveCount);
     return true;
 }
 
-void ParseObjective(KeyValues kv, int objIdx, int &iProblems)
+void ParseObjective(KeyValues kv, int objIdx)
 {
     kv.GetString("name", g_Objectives[objIdx].sName, 64, "");
     if (g_Objectives[objIdx].sName[0] == '\0')
         Format(g_Objectives[objIdx].sName, 64, "Objective %d", objIdx + 1);
 
-    // Reset before re-parsing - without this, a second map load (without a full
-    // plugin reload) appends after stale data from the previous load instead of
-    // overwriting from index 0.
+    // Reset before re-parsing - otherwise a second map load appends after
+    // stale data instead of overwriting from index 0.
     g_Objectives[objIdx].iTargetCount = 0;
     g_Objectives[objIdx].survivorTask.bConfigured = false;
     g_Objectives[objIdx].survivorTask.iCommandCount = 0;
@@ -349,32 +285,22 @@ void ParseObjective(KeyValues kv, int objIdx, int &iProblems)
 
             g_Objectives[objIdx].targets[t].iEntity = -1;
             g_Objectives[objIdx].targets[t].bCompleted = false;
-
-            if (g_Objectives[objIdx].targets[t].sName[0] == '\0' || g_Objectives[objIdx].targets[t].sType[0] == '\0'
-                || g_Objectives[objIdx].targets[t].sCompletedOutput[0] == '\0')
-            {
-                QueueValidationMsg("Objective %d target %d missing name/type/completed field.", objIdx + 1, t + 1);
-                iProblems++;
-            }
-
             g_Objectives[objIdx].iTargetCount++;
         }
         else if (StrEqual(sSectionName, "survivor_tasks"))
         {
-            ParseTeamTask(kv, objIdx, false, iProblems);
+            ParseTeamTask(kv, objIdx, false);
         }
         else if (StrEqual(sSectionName, "zombie_tasks"))
         {
-            ParseTeamTask(kv, objIdx, true, iProblems);
+            ParseTeamTask(kv, objIdx, true);
         }
 
     } while (kv.GotoNextKey(true));
     kv.GoBack();
 }
 
-// Reads the first "task" under this team's task container, then every direct
-// "command" child under it, in order - the full sequence for that team.
-void ParseTeamTask(KeyValues kv, int objIdx, bool bZombie, int &iProblems)
+void ParseTeamTask(KeyValues kv, int objIdx, bool bZombie)
 {
     if (!KvEnterFirstChildNamed(kv, "task"))
         return;
@@ -394,12 +320,6 @@ void ParseTeamTask(KeyValues kv, int objIdx, bool bZombie, int &iProblems)
             int cmdType = CommandTypeFromString(sType);
             float fParam = kv.GetFloat("duration", 0.0);
 
-            if (cmdType == -1)
-            {
-                QueueValidationMsg("Objective %d: unrecognized/unsupported command type '%s'.", objIdx + 1, sType);
-                iProblems++;
-            }
-
             if (bZombie)
             {
                 g_Objectives[objIdx].zombieTask.commands[iCmdCount].cmdType = cmdType;
@@ -414,7 +334,7 @@ void ParseTeamTask(KeyValues kv, int objIdx, bool bZombie, int &iProblems)
             iCmdCount++;
 
         } while (kv.GotoNextKey(true));
-        kv.GoBack(); // leave "command" level, back to "task" level
+        kv.GoBack();
 
         if (bZombie)
         {
@@ -426,20 +346,13 @@ void ParseTeamTask(KeyValues kv, int objIdx, bool bZombie, int &iProblems)
             g_Objectives[objIdx].survivorTask.iCommandCount = iCmdCount;
             g_Objectives[objIdx].survivorTask.bConfigured = (iCmdCount > 0);
         }
-
-        if (iCmdCount == 0)
-        {
-            QueueValidationMsg("Objective %d: task has no command.", objIdx + 1);
-            iProblems++;
-        }
     }
 
-    kv.GoBack(); // leave "task" level, back to survivor_tasks/zombie_tasks level
+    kv.GoBack();
 }
 
-// Enters the first direct child section named `name`, cursor left one level
-// deeper on success (caller must GoBack). On failure the cursor is already
-// restored to the caller's original position - no GoBack needed.
+// Cursor left one level deeper on success (caller must GoBack). On failure
+// the cursor is already restored - no GoBack needed.
 bool KvEnterFirstChildNamed(KeyValues kv, const char[] name)
 {
     if (!kv.GotoFirstSubKey(true))
@@ -459,18 +372,18 @@ bool KvEnterFirstChildNamed(KeyValues kv, const char[] name)
 
 int CommandTypeFromString(const char[] sType)
 {
-    if (StrEqual(sType, "MOVE_TO", false))             return view_as<int>(NAVBOT_PLUGINCMD_MOVE_TO);
-    if (StrEqual(sType, "WAIT", false))                 return view_as<int>(NAVBOT_PLUGINCMD_WAIT);
-    if (StrEqual(sType, "PATROL", false))               return view_as<int>(NAVBOT_PLUGINCMD_PATROL);
-    if (StrEqual(sType, "SEEK_AND_DESTROY", false))     return view_as<int>(NAVBOT_PLUGINCMD_SEEK_AND_DESTROY);
+    if (StrEqual(sType, "MOVE_TO", false))          return view_as<int>(NAVBOT_PLUGINCMD_MOVE_TO);
+    if (StrEqual(sType, "WAIT", false))              return view_as<int>(NAVBOT_PLUGINCMD_WAIT);
+    if (StrEqual(sType, "PATROL", false))            return view_as<int>(NAVBOT_PLUGINCMD_PATROL);
+    if (StrEqual(sType, "SEEK_AND_DESTROY", false))  return view_as<int>(NAVBOT_PLUGINCMD_SEEK_AND_DESTROY);
     return -1;
 }
 
 void CommandTypeToString(int cmdType, char[] sOut, int size)
 {
-    if (cmdType == view_as<int>(NAVBOT_PLUGINCMD_MOVE_TO))              strcopy(sOut, size, "MOVE_TO");
-    else if (cmdType == view_as<int>(NAVBOT_PLUGINCMD_WAIT))            strcopy(sOut, size, "WAIT");
-    else if (cmdType == view_as<int>(NAVBOT_PLUGINCMD_PATROL))          strcopy(sOut, size, "PATROL");
+    if (cmdType == view_as<int>(NAVBOT_PLUGINCMD_MOVE_TO))               strcopy(sOut, size, "MOVE_TO");
+    else if (cmdType == view_as<int>(NAVBOT_PLUGINCMD_WAIT))             strcopy(sOut, size, "WAIT");
+    else if (cmdType == view_as<int>(NAVBOT_PLUGINCMD_PATROL))           strcopy(sOut, size, "PATROL");
     else if (cmdType == view_as<int>(NAVBOT_PLUGINCMD_SEEK_AND_DESTROY)) strcopy(sOut, size, "SEEK_AND_DESTROY");
     else                                                                 strcopy(sOut, size, "UNKNOWN");
 }
@@ -509,40 +422,6 @@ int ResolveTargetEntity(const char[] sName, const char[] sType, const float fOri
 
     return best;
 }
-
-// Re-resolves a target's entity index if it's gone stale since map load - some
-// map scripts kill/respawn entities mid-round (confirmed: this map's AngelScript
-// touches PCP-Breakable when Destroy PCP activates), which would otherwise leave
-// us holding a dead index and throwing "NULL entity" on the next native call.
-// HookEntityOutput is classname-wide, not entity-index-specific, so a
-// newly-resolved entity is automatically covered by the existing hook already -
-// no re-hook needed here.
-void EnsureTargetEntityValid(int objIdx, int targetIdx)
-{
-    int entity = g_Objectives[objIdx].targets[targetIdx].iEntity;
-    if (entity != -1 && IsValidEntity(entity))
-        return;
-
-    int resolved = ResolveTargetEntity(
-        g_Objectives[objIdx].targets[targetIdx].sName,
-        g_Objectives[objIdx].targets[targetIdx].sType,
-        g_Objectives[objIdx].targets[targetIdx].fOrigin,
-        ORIGIN_TOLERANCE);
-
-    if (resolved != -1)
-    {
-        g_Objectives[objIdx].targets[targetIdx].iEntity = resolved;
-        ZpoMsg("Objective %d target %d re-resolved (entity was stale, now %d).", objIdx + 1, targetIdx + 1, resolved);
-    }
-    else
-    {
-        ZpoMsg("Objective %d target %d entity is stale and could not be re-resolved.", objIdx + 1, targetIdx + 1);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Output hooks for target completion
-// ---------------------------------------------------------------------------
 
 void HookAllTargetOutputs()
 {
@@ -594,6 +473,10 @@ public void Callback_TargetCompleted(const char[] output, int caller, int activa
             return;
         }
     }
+
+    // Diagnostic: fired but matched no known target - shows whether the
+    // native event happened at all, and against what entity index.
+    ZpoMsg("Output '%s' fired by entity %d - no matching target.", output, caller);
 }
 
 void CheckObjectiveComplete(int objIdx)
@@ -606,37 +489,22 @@ void CheckObjectiveComplete(int objIdx)
 
     ZpoMsg("Objective %d complete.", objIdx + 1);
 
-    // Release everyone so the next poll dispatches fresh against the new objective.
-    for (int client = 0; client <= MAXPLAYERS; client++)
-    {
-        g_iBotObjective[client] = -1;
-        g_bBotDone[client] = false;
-    }
-
     g_iCurrentObjective++;
     if (g_iCurrentObjective >= g_iObjectiveCount)
     {
         ZpoMsg("All objectives complete.");
         g_iCurrentObjective = -1;
     }
-}
 
-// ---------------------------------------------------------------------------
-// Poll loop
-// ---------------------------------------------------------------------------
+    // No force-release here - every plugin command task rejects new commands
+    // while running, so a bot mid-command releases itself naturally once its
+    // own command actually finishes (see UpdateTrackedBots).
+}
 
 public Action Timer_PollObjective(Handle timer)
 {
     if (!g_bConfigLoaded || !g_cvEnabled.BoolValue || !g_bPollingAllowed || g_iCurrentObjective == -1)
-    {
-        if (!g_bGateLogged)
-        {
-            ZpoMsg("Poll gate blocked: configLoaded=%d enabled=%d pollingAllowed=%d currentObjective=%d",
-                g_bConfigLoaded, g_cvEnabled.BoolValue, g_bPollingAllowed, g_iCurrentObjective);
-            g_bGateLogged = true;
-        }
         return Plugin_Continue;
-    }
 
     int iTrackedClients[MAXPLAYERS + 1];
     int iTrackedCount = 0;
@@ -645,9 +513,6 @@ public Action Timer_PollObjective(Handle timer)
     {
         if (!IsClientInGame(client) || !IsFakeClient(client) || !IsPlayerAlive(client))
         {
-            // Covers death/disconnect, and doubles as "reissue on respawn" - a bot
-            // that comes back (new zombie, converted survivor) is untracked again
-            // and gets dispatched fresh the next tick it's seen alive.
             g_iBotObjective[client] = -1;
             continue;
         }
@@ -661,10 +526,16 @@ public Action Timer_PollObjective(Handle timer)
         else
             continue;
 
-        // Team changed since last tracked (e.g. survivor died and infected) -
-        // release so it's picked up fresh for its new team's task.
         if (g_iBotObjective[client] != -1 && g_bBotZombie[client] != bZombie)
             g_iBotObjective[client] = -1;
+
+        // Only release a bot tracked for a stale objective once its own
+        // command has actually finished - never mid-command.
+        if (g_iBotObjective[client] != -1 && g_iBotObjective[client] != g_iCurrentObjective && g_bBotDone[client])
+        {
+            g_iBotObjective[client] = -1;
+            g_bBotDone[client] = false;
+        }
 
         if (g_iBotObjective[client] == -1)
             EnterTask(client, bZombie);
@@ -678,8 +549,6 @@ public Action Timer_PollObjective(Handle timer)
     return Plugin_Continue;
 }
 
-// Dispatches a bot into command index 0 of its team's sequence for the
-// current objective, resolving its sticky target for the first time.
 void EnterTask(int client, bool bZombie)
 {
     int objIdx = g_iCurrentObjective;
@@ -700,8 +569,6 @@ void EnterTask(int client, bool bZombie)
     IssueCommand(client, objIdx, bZombie, 0);
 }
 
-// Issues the command at cmdIndex in the bot's team sequence and records it as
-// the bot's current step.
 void IssueCommand(int client, int objIdx, bool bZombie, int cmdIndex)
 {
     int cmdType  = bZombie ? g_Objectives[objIdx].zombieTask.commands[cmdIndex].cmdType  : g_Objectives[objIdx].survivorTask.commands[cmdIndex].cmdType;
@@ -712,9 +579,11 @@ void IssueCommand(int client, int objIdx, bool bZombie, int cmdIndex)
 
     if (cmdType == view_as<int>(NAVBOT_PLUGINCMD_MOVE_TO))
     {
-        // Origin taken directly from the .cfg, not re-queried from the live
-        // entity - decouples movement from entity resolution.
-        bot.SendPluginCommand(NAVBOT_PLUGINCMD_MOVE_TO, g_Objectives[objIdx].targets[targetIdx].fOrigin);
+        // Scripted rather than SendPluginCommand - plain MOVE_TO never
+        // self-terminates, and every plugin command task rejects new
+        // commands while running, so a bot on plain MOVE_TO could never
+        // receive anything else. This self-cancels via ScriptedMoveTo.
+        bot.SendScriptedPluginCommand(ScriptedMoveTo);
     }
     else if (cmdType == view_as<int>(NAVBOT_PLUGINCMD_WAIT))
     {
@@ -726,14 +595,7 @@ void IssueCommand(int client, int objIdx, bool bZombie, int cmdIndex)
     }
     else if (cmdType == view_as<int>(NAVBOT_PLUGINCMD_SEEK_AND_DESTROY))
     {
-        // Previous entity-reference theory retracted - disproven by BreakObstacle
-        // using the identical pawnutils::ReadEntity() function with a raw index,
-        // confirmed working live. Simplified to the bare minimum: no intervening
-        // native calls between reading the value and dispatching it, matching the
-        // ROAM corruption pattern found earlier tonight (a native call sitting
-        // between value and dispatch corrupted the argument there too).
-        int iEntity = g_Objectives[objIdx].targets[targetIdx].iEntity;
-        bot.SendPluginCommand(NAVBOT_PLUGINCMD_SEEK_AND_DESTROY, iEntity);
+        bot.SendPluginCommand(NAVBOT_PLUGINCMD_SEEK_AND_DESTROY, g_Objectives[objIdx].targets[targetIdx].iEntity);
     }
 
     g_iBotCommandIndex[client] = cmdIndex;
@@ -746,14 +608,35 @@ void IssueCommand(int client, int objIdx, bool bZombie, int cmdIndex)
         bZombie ? "Zombie" : "Survivor", client, g_Objectives[objIdx].sName, sCmdType);
 }
 
-// Universal exit: if the bot's assigned target is complete, its current
-// command is done regardless of type - this is what lets SEEK_AND_DESTROY and
-// PATROL advance at all, since we have no other way to detect their
-// completion, and it's the same OnBreak/OnTrigger signal either way, just
-// arriving through Callback_TargetCompleted instead of a command-specific
-// check. Command-specific checks (arrival, duration) still exist alongside
-// this - they're what makes MOVE_TO progress to SEEK_AND_DESTROY in the first
-// place, since nothing attacks the target until that command begins.
+public Action ScriptedMoveTo(NavBot bot, float moveGoal[3], NavBotRouteType routeType)
+{
+    int client = bot.Index;
+
+    if (g_iBotObjective[client] == -1)
+        return Plugin_Stop;
+
+    int objIdx = g_iBotObjective[client];
+    int targetIdx = g_iBotTargetIndex[client];
+
+    if (g_Objectives[objIdx].targets[targetIdx].bCompleted)
+        return Plugin_Stop;
+
+    float fOrigin[3];
+    GetClientAbsOrigin(client, fOrigin);
+
+    if (GetVectorDistance(fOrigin, g_Objectives[objIdx].targets[targetIdx].fOrigin) <= 0.0)
+        return Plugin_Stop;
+
+    moveGoal[0] = g_Objectives[objIdx].targets[targetIdx].fOrigin[0];
+    moveGoal[1] = g_Objectives[objIdx].targets[targetIdx].fOrigin[1];
+    moveGoal[2] = g_Objectives[objIdx].targets[targetIdx].fOrigin[2];
+
+    // Plugin_Continue is a trap here - NavBot's C++ side invalidates
+    // navigation and skips the goal entirely for that specific value.
+    // Plugin_Handled is what actually drives movement.
+    return Plugin_Handled;
+}
+
 void UpdateTrackedBots(const int[] iClients, int iCount)
 {
     for (int i = 0; i < iCount; i++)
@@ -764,27 +647,19 @@ void UpdateTrackedBots(const int[] iClients, int iCount)
         int cmdIndex = g_iBotCommandIndex[client];
         int targetIdx = g_iBotTargetIndex[client];
 
+        int cmdType = bZombie ? g_Objectives[objIdx].zombieTask.commands[cmdIndex].cmdType : g_Objectives[objIdx].survivorTask.commands[cmdIndex].cmdType;
+        bool bIsMoveTo = (cmdType == view_as<int>(NAVBOT_PLUGINCMD_MOVE_TO));
+
         if (g_Objectives[objIdx].targets[targetIdx].bCompleted)
         {
-            AdvanceBot(client, objIdx, bZombie, cmdIndex);
+            if (bIsMoveTo)
+                ScheduleAdvance(client, objIdx, bZombie, cmdIndex);
+            else
+                AdvanceBot(client, objIdx, bZombie, cmdIndex);
             continue;
         }
 
-        int cmdType = bZombie ? g_Objectives[objIdx].zombieTask.commands[cmdIndex].cmdType : g_Objectives[objIdx].survivorTask.commands[cmdIndex].cmdType;
-
-        if (cmdType == view_as<int>(NAVBOT_PLUGINCMD_MOVE_TO))
-        {
-            float fOrigin[3];
-            GetClientAbsOrigin(client, fOrigin);
-
-            // No tolerance - direct distance check, confirmed reliable via live
-            // testing (NavBot appears to snap the bot onto the goal on arrival).
-            if (GetVectorDistance(fOrigin, g_Objectives[objIdx].targets[targetIdx].fOrigin) > 0.0)
-                continue;
-
-            AdvanceBot(client, objIdx, bZombie, cmdIndex);
-        }
-        else if (cmdType == view_as<int>(NAVBOT_PLUGINCMD_WAIT))
+        if (cmdType == view_as<int>(NAVBOT_PLUGINCMD_WAIT))
         {
             float fParam = bZombie ? g_Objectives[objIdx].zombieTask.commands[cmdIndex].fParam : g_Objectives[objIdx].survivorTask.commands[cmdIndex].fParam;
             if ((GetGameTime() - g_fBotCommandStart[client]) < fParam)
@@ -792,9 +667,49 @@ void UpdateTrackedBots(const int[] iClients, int iCount)
 
             AdvanceBot(client, objIdx, bZombie, cmdIndex);
         }
-        // PATROL / SEEK_AND_DESTROY: no command-specific completion signal -
-        // only advance via the target-complete check above.
+        else if (bIsMoveTo)
+        {
+            float fOrigin[3];
+            GetClientAbsOrigin(client, fOrigin);
+            if (GetVectorDistance(fOrigin, g_Objectives[objIdx].targets[targetIdx].fOrigin) > 0.0)
+                continue;
+
+            ScheduleAdvance(client, objIdx, bZombie, cmdIndex);
+        }
     }
+}
+
+// Short delay before dispatching the next command after MOVE_TO - gives
+// NavBot's own scripted-task resolution time to actually finish first.
+// Dispatching too early would hit the same "reject while running" issue
+// MOVE_TO itself was built to avoid.
+void ScheduleAdvance(int client, int objIdx, bool bZombie, int cmdIndex)
+{
+    DataPack pack = new DataPack();
+    pack.WriteCell(GetClientUserId(client));
+    pack.WriteCell(objIdx);
+    pack.WriteCell(bZombie);
+    pack.WriteCell(cmdIndex);
+    CreateTimer(0.5, Timer_DelayedAdvance, pack);
+}
+
+public Action Timer_DelayedAdvance(Handle timer, DataPack pack)
+{
+    pack.Reset();
+    int userid = pack.ReadCell();
+    int objIdx = pack.ReadCell();
+    bool bZombie = pack.ReadCell();
+    int cmdIndex = pack.ReadCell();
+
+    int client = GetClientOfUserId(userid);
+    if (client == 0 || !IsClientInGame(client) || !IsPlayerAlive(client))
+        return Plugin_Stop;
+
+    if (g_iBotObjective[client] != objIdx || g_iBotCommandIndex[client] != cmdIndex || g_bBotZombie[client] != bZombie)
+        return Plugin_Stop;
+
+    AdvanceBot(client, objIdx, bZombie, cmdIndex);
+    return Plugin_Stop;
 }
 
 void AdvanceBot(int client, int objIdx, bool bZombie, int cmdIndex)
@@ -804,7 +719,7 @@ void AdvanceBot(int client, int objIdx, bool bZombie, int cmdIndex)
 
     if (nextIndex >= iCmdCount)
     {
-        g_bBotDone[client] = true; // sequence complete for this bot - stay parked
+        g_bBotDone[client] = true;
         return;
     }
 
