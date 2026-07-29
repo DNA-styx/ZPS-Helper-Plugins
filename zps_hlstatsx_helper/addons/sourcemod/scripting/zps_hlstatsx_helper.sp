@@ -19,7 +19,7 @@
 // HLstatsZ daemon's own source (doEvent_EnterGame in
 // HLstats_EventHandlers.plib, github.com/SnipeZilla/HLSTATS-2).
 
-#define PLUGIN_VERSION "1.9.4"
+#define PLUGIN_VERSION "1.9.7"
 #define MAX_TEAMS 8
 #define TEAM_SURVIVORS 2
 #define TEAM_ZOMBIES 3
@@ -361,8 +361,27 @@ public void Event_ClientSoundPlayer(Event event, const char[] name, bool dontBro
 
 	// ZPlayer.Panic fires via clientsound_player when a survivor panics.
 	// Confirmed via sound monitor log (07/01/2026). Logged as a zero-point
-	// player action for statistical tracking only.
-	if (!StrEqual(sound, "ZPlayer.Panic", false))
+	// player action for statistical tracking only (defensive skill).
+	//
+	// Carrier_Action.Spotted fires via clientsound_player when a Carrier
+	// zombie uses the Spot skill. Confirmed via zps_sound_monitor.log
+	// (07/25-07/26/2026) and cross-checked against zps_navbot_zombie_skills.sp
+	// v0.8.0, which independently detects the same sound string for its own
+	// local logging. Logged as a 1-point player action (aggressive skill,
+	// vs. zps_panic's 0 points as a defensive skill - value set per
+	// DNA.styx direction). Tagged (who was spotted) is intentionally not
+	// correlated/logged yet - deferred.
+	char action[32];
+
+	if (StrEqual(sound, "ZPlayer.Panic", false))
+	{
+		strcopy(action, sizeof(action), "zps_panic");
+	}
+	else if (StrEqual(sound, "Carrier_Action.Spotted", false))
+	{
+		strcopy(action, sizeof(action), "zps_carrier_spot");
+	}
+	else
 	{
 		return;
 	}
@@ -379,8 +398,8 @@ public void Event_ClientSoundPlayer(Event event, const char[] name, bool dontBro
 	GetClientAuthId(client, AuthId_Steam2, playerAuth, sizeof(playerAuth));
 	GetTeamNameForClient(client, playerTeam, sizeof(playerTeam));
 
-	LogToGame("\"%s<%d><%s><%s>\" triggered \"zps_panic\"",
-		playerName, GetClientUserId(client), playerAuth, playerTeam);
+	LogToGame("\"%s<%d><%s><%s>\" triggered \"%s\"",
+		playerName, GetClientUserId(client), playerAuth, playerTeam, action);
 }
 
 public Action Command_Say(int client, const char[] command, int args)

@@ -24,6 +24,10 @@ Runs alongside SuperLogs: ZPS and the HLstatsX CE Ingame Plugin — doesn't repl
 ## Changes
 
 - Kill/death/skill tracking restored (including headshots).
+- Environmental deaths logged (fall, drown, burn, exploding barrel).
+- Round win tracking, with a team reward plus a bonus for players still alive at round end.
+- Infection tagging logged as a player-vs-player action, separate from kills.
+- Panic and Carrier Spot skill usage logged as tracked player actions.
 - Chat logging restored, with team messages marked `(Team)`.
 - Real connect IPs logged, fixing GeoIP/country flags.
 - Disconnects logged, closing out player sessions cleanly.
