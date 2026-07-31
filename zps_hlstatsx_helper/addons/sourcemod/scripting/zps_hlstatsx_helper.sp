@@ -19,7 +19,7 @@
 // HLstatsZ daemon's own source (doEvent_EnterGame in
 // HLstats_EventHandlers.plib, github.com/SnipeZilla/HLSTATS-2).
 
-#define PLUGIN_VERSION "1.9.7"
+#define PLUGIN_VERSION "1.9.11"
 #define MAX_TEAMS 8
 #define TEAM_SURVIVORS 2
 #define TEAM_ZOMBIES 3
@@ -317,7 +317,29 @@ public void Event_ClientSound(Event event, const char[] name, bool dontBroadcast
 	}
 	else if (StrContains(sound, "Round_End.Human", false) != -1)
 	{
-		LogRoundWin(TEAM_SURVIVORS, "zps_survivor_win", "zps_survivor_alive");
+		// Objective maps (zpo_*) log a per-map action built as
+		// "zps_survivor_alive_<mapname>", grouped alphabetically under
+		// the existing "zps_survivor_alive" naming convention in
+		// HLstatsX. Built dynamically from GetCurrentMap() - no map names
+		// live in this plugin, just add the matching hlstats_Actions row
+		// as maps are added. Note: the daemon's own map-prefix lookup
+		// (doEvent_PlayerAction, HLstats_EventHandlers.plib) only checks
+		// <map>_<action>, not <action>_<map>, so that mechanism doesn't
+		// apply here - this string is matched as a plain exact action
+		// code instead. zps_* survival maps (non-objective) are unaffected.
+		char aliveAction[64];
+		if (IsObjectiveMap())
+		{
+			char map[PLATFORM_MAX_PATH];
+			GetCurrentMap(map, sizeof(map));
+			Format(aliveAction, sizeof(aliveAction), "zps_survivor_alive_%s", map);
+		}
+		else
+		{
+			strcopy(aliveAction, sizeof(aliveAction), "zps_survivor_alive");
+		}
+
+		LogRoundWin(TEAM_SURVIVORS, "zps_survivor_win", aliveAction);
 	}
 	else if (StrContains(sound, "Round_End.Zombie", false) != -1)
 	{
@@ -325,6 +347,16 @@ public void Event_ClientSound(Event event, const char[] name, bool dontBroadcast
 	}
 	// Round_End.Stalemate intentionally produces no log lines - no
 	// reward is configured for a draw.
+}
+
+// True if the current map is an objective-type ZPS map (zpo_ prefix),
+// as opposed to a standard survival map (zps_ prefix).
+bool IsObjectiveMap()
+{
+	char map[PLATFORM_MAX_PATH];
+	GetCurrentMap(map, sizeof(map));
+
+	return (strncmp(map, "zpo_", 4, false) == 0);
 }
 
 // Single Team-triggered line rewards every tracked player on the
