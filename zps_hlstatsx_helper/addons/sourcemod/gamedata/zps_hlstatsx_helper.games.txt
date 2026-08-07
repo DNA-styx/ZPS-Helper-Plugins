@@ -1,0 +1,35 @@
+"Games"
+{
+	"zps"
+	{
+		"Signatures"
+		{
+			"CTrigger_Escape::Escape"
+			{
+				"library"	"server"
+				"linux"		"@_ZN15CTrigger_Escape6EscapeEP11CBaseEntityb"
+			}
+		}
+		"Functions"
+		{
+			"OnEscapeByTrigger"
+			{
+				"signature"	"CTrigger_Escape::Escape"
+				"callconv"	"thiscall"
+				"return"	"void"
+				"this"		"entity"
+				"arguments"
+				{
+					"pPlayer"
+					{
+						"type"	"cbaseentity"
+					}
+					"bSendMessage"
+					{
+						"type"	"bool"
+					}
+				}
+			}
+		}
+	}
+}

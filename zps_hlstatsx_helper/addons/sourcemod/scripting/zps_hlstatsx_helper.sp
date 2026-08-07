@@ -3,6 +3,7 @@
 
 #include <sourcemod>
 #include <sdktools>
+#include <dhooks>
 
 // claude.ai guided by DNA.styx
 //
@@ -19,12 +20,13 @@
 // HLstatsZ daemon's own source (doEvent_EnterGame in
 // HLstats_EventHandlers.plib, github.com/SnipeZilla/HLSTATS-2).
 
-#define PLUGIN_VERSION "1.9.11"
+#define PLUGIN_VERSION "1.9.12"
 #define MAX_TEAMS 8
 #define TEAM_SURVIVORS 2
 #define TEAM_ZOMBIES 3
 
 char g_sTeamName[MAX_TEAMS][32];
+DynamicDetour g_hEscapeDetour;
 
 public Plugin myinfo =
 {
@@ -44,6 +46,98 @@ public void OnPluginStart()
 	HookEvent("clientsound_player", Event_ClientSoundPlayer);
 	AddCommandListener(Command_Say, "say");
 	AddCommandListener(Command_Say, "say_team");
+
+	SetupEscapeDetour();
+}
+
+// Credits objective-map (zpo_*) survivors who reach trigger_escape at the
+// moment they escape, rather than relying solely on Round_End.Human's
+// IsPlayerAlive()/team check in LogRoundWin. Confirmed via live console
+// logs (08/01/2026) that a round can win (Team "Survivors" triggered
+// "zps_survivor_win") with zero per-player triggered lines following it,
+// despite human survivors still active seconds later - the working theory
+// is that escaping (CZP_Player::SetEscaped, called the same way for both
+// the trigger_escape entity and the AngelScript CZP_Player::Escape() API
+// per api.zombiepanicsource.com's own description) removes the player from
+// whatever IsPlayerAlive()/team state LogRoundWin checks by round end.
+// This hook is a global engine function - one signature covers every
+// trigger_escape on every map, no per-map work needed.
+//
+// Signature/arguments confirmed against the ZPSUTIL extension's own
+// gamedata (zpsutils.txt, "OnEscapeByTrigger") and reference hook
+// (Hook_OnEscapeByTrigger in its source) - not guessed.
+void SetupEscapeDetour()
+{
+	char gamedataPath[PLATFORM_MAX_PATH];
+	BuildPath(Path_SM, gamedataPath, sizeof(gamedataPath), "gamedata/zps_hlstatsx_helper.games.txt");
+
+	if (!FileExists(gamedataPath))
+	{
+		SetFailState("Missing gamedata file: gamedata/zps_hlstatsx_helper.games.txt");
+	}
+
+	GameData gc = new GameData("zps_hlstatsx_helper.games");
+	if (gc == null)
+	{
+		SetFailState("Failed to load gamedata: zps_hlstatsx_helper.games");
+	}
+
+	g_hEscapeDetour = DynamicDetour.FromConf(gc, "OnEscapeByTrigger");
+	if (g_hEscapeDetour == null)
+	{
+		delete gc;
+		SetFailState("Failed to create detour for CTrigger_Escape::Escape. Check gamedata.");
+	}
+
+	g_hEscapeDetour.Enable(Hook_Post, Hook_OnEscapeByTrigger);
+
+	delete gc;
+}
+
+public MRESReturn Hook_OnEscapeByTrigger(int pThis, DHookParam hParams)
+{
+	if (hParams.IsNull(1))
+	{
+		return MRES_Ignored;
+	}
+
+	int client = hParams.Get(1);
+	LogPlayerEscape(client);
+
+	return MRES_Ignored;
+}
+
+// Only credited on objective maps, matching the existing
+// zps_survivor_alive_<map> convention built in Event_ClientSound's
+// Round_End.Human branch. Standard zps_* survival maps don't rely on
+// trigger_escape for their win condition, so this is a no-op there -
+// if it does fire, it's not double-counted against anything since
+// zps_survivor_alive is only ever logged from LogRoundWin.
+void LogPlayerEscape(int client)
+{
+	if (!IsObjectiveMap())
+	{
+		return;
+	}
+
+	if (client < 1 || client > MaxClients || !IsClientInGame(client) || GetClientTeam(client) != TEAM_SURVIVORS)
+	{
+		return;
+	}
+
+	char map[PLATFORM_MAX_PATH];
+	GetCurrentMap(map, sizeof(map));
+
+	char aliveAction[64];
+	Format(aliveAction, sizeof(aliveAction), "zps_survivor_alive_%s", map);
+
+	char playerName[MAX_NAME_LENGTH], playerAuth[32], playerTeam[32];
+	GetClientName(client, playerName, sizeof(playerName));
+	GetClientAuthId(client, AuthId_Steam2, playerAuth, sizeof(playerAuth));
+	GetTeamNameForClient(client, playerTeam, sizeof(playerTeam));
+
+	LogToGame("\"%s<%d><%s><%s>\" triggered \"%s\"",
+		playerName, GetClientUserId(client), playerAuth, playerTeam, aliveAction);
 }
 
 public void OnClientAuthorized(int client, const char[] auth)
