@@ -20,7 +20,7 @@
 // HLstatsZ daemon's own source (doEvent_EnterGame in
 // HLstats_EventHandlers.plib, github.com/SnipeZilla/HLSTATS-2).
 
-#define PLUGIN_VERSION "1.9.12"
+#define PLUGIN_VERSION "1.9.13"
 #define MAX_TEAMS 8
 #define TEAM_SURVIVORS 2
 #define TEAM_ZOMBIES 3
@@ -206,6 +206,39 @@ public void OnClientDisconnect(int client)
 public void OnMapStart()
 {
 	CacheTeamNames();
+	HookAllEscapeTriggers();
+}
+
+// Alternative to the CTrigger_Escape::Escape DHook detour (SetupEscapeDetour /
+// Hook_OnEscapeByTrigger) - hooks trigger_escape's own standard Hammer
+// output (OnPlayerEscape, confirmed in Zombie Panic! Source.fgd.txt) instead
+// of the underlying C++ function. Confirmed via zpo_harvest's own entity
+// dump (project knowledge) that it has a real trigger_escape entity
+// ("gamewinhuman", parented to rescuevehicle_train) wired to
+// "OnPlayerEscape" -> AngelScript Obj_Escaped() - so this output does fire
+// on this map. No gamedata/signature needed, unlike the DHook approach,
+// which produced zero firings all day on every objective map despite this
+// entity existing - worth running both in parallel to see which one
+// actually works before retiring the DHook version.
+void HookAllEscapeTriggers()
+{
+	int entity = INVALID_ENT_REFERENCE;
+
+	while ((entity = FindEntityByClassname(entity, "trigger_escape")) != INVALID_ENT_REFERENCE)
+	{
+		HookSingleEntityOutput(entity, "OnPlayerEscape", Hook_OnPlayerEscapeOutput, false);
+	}
+}
+
+// "activator" is the entity that touched the trigger, per standard Source
+// entity I/O semantics (matches the existing HookSingleEntityOutput calls
+// already used throughout zps_objective_support for other trigger/button
+// outputs on this same map). OnPlayerEscape itself carries no parameters
+// (FGD: output OnPlayerEscape(void)), so activator is the only way to get
+// the escaping player back out of this callback.
+void Hook_OnPlayerEscapeOutput(const char[] output, int caller, int activator, float delay)
+{
+	LogPlayerEscape(activator);
 }
 
 // Proven approach used by SuperLogs/HLstatsX's loghelper.inc (GetTeams()):
