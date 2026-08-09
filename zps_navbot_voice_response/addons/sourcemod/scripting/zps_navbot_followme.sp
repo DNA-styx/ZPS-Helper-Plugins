@@ -13,22 +13,33 @@ Handle g_hSDKVoiceMenu;
 ConVar g_cvFollowTime;
 ConVar g_cvFollowMinDist;
 ConVar g_cvChatMessage;
+ConVar g_cvMaxFollowers;
+
+int g_FollowingTargetUserId[MAXPLAYERS + 1]; // indexed by bot client index, 0 = not tracked as following. Best-effort bookkeeping only - no engine query native exists to confirm live state.
+
+enum VoiceLineType
+{
+	VOICELINE_AGREE = 0,
+	VOICELINE_DECLINE,
+	VOICELINE_NEEDHEALTH
+};
 
 public Plugin myinfo =
 {
 	name        = "ZPS NavBot FollowMe",
 	author      = "Claude.ai guided by DNA.styx",
 	description = "Nearest survivor Navbot follows the caller on #VOICE_FOLLOWME.",
-	version     = "0.7.0",
+	version     = "0.8.1",
 	url         = "https://github.com/DNA-styx/ZPS-Helper-Plugins"
 };
 
 public void OnPluginStart()
 {
-	CreateConVar("sm_zps_navbot_followme_version", "0.7.0", "ZPS NavBot FollowMe version.", FCVAR_NOTIFY | FCVAR_DONTRECORD);
+	CreateConVar("sm_zps_navbot_followme_version", "0.8.1", "ZPS NavBot FollowMe version.", FCVAR_NOTIFY | FCVAR_DONTRECORD);
 	g_cvFollowTime = CreateConVar("sm_zps_navbot_followme_time", "300.0", "Max time in seconds a bot will follow before the order expires.", FCVAR_PROTECTED);
 	g_cvFollowMinDist = CreateConVar("sm_zps_navbot_followme_mindist", "120.0", "Minimum distance the bot keeps from the followed player.", FCVAR_PROTECTED);
 	g_cvChatMessage = CreateConVar("sm_zps_navbot_followme_chatmsg", "0", "Print a chat message to the caller when a bot starts following. 0 = off, 1 = on.", FCVAR_PROTECTED);
+	g_cvMaxFollowers = CreateConVar("sm_zps_navbot_followme_maxfollowers", "2", "Max number of bots that can follow a single player at once.", FCVAR_PROTECTED);
 
 	AutoExecConfig(true, "zps_navbot_followme");
 
@@ -71,6 +82,13 @@ public void OnPluginStart()
 	}
 
 	delete gc;
+
+	CreateTimer(2.0, Timer_HealthCheck, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+}
+
+public void OnClientDisconnect(int client)
+{
+	g_FollowingTargetUserId[client] = 0;
 }
 
 public MRESReturn Hook_OnVoiceMenuPost(int client, DHookParam params)
@@ -99,9 +117,33 @@ public MRESReturn Hook_OnVoiceMenuPost(int client, DHookParam params)
 		return MRES_Ignored;
 	}
 
+	int callerUserId = GetClientUserId(client);
+	int followerCount = CountFollowersOf(callerUserId);
+
+	if (followerCount >= g_cvMaxFollowers.IntValue)
+	{
+		DeclineFollow(bot);
+		return MRES_Ignored;
+	}
+
 	StartFollow(bot, client);
 
 	return MRES_Ignored;
+}
+
+int CountFollowersOf(int targetUserId)
+{
+	int count = 0;
+
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (g_FollowingTargetUserId[i] == targetUserId)
+		{
+			count++;
+		}
+	}
+
+	return count;
 }
 
 int FindNearestSurvivorBot(int caller)
@@ -142,11 +184,19 @@ void StartFollow(int botClient, int callerClient)
 {
 	float followTime = g_cvFollowTime.FloatValue;
 	float followMinDist = g_cvFollowMinDist.FloatValue;
+	int callerUserId = GetClientUserId(callerClient);
 
 	NavBot bot = view_as<NavBot>(botClient);
 	bot.SendPluginCommand(NAVBOT_PLUGINCMD_FOLLOW_ENTITY, callerClient, followTime, followMinDist);
 
-	RequestFrame(Frame_PlayAgreeVoiceLine, botClient);
+	g_FollowingTargetUserId[botClient] = callerUserId;
+
+	DataPack pack = new DataPack();
+	pack.WriteCell(botClient);
+	pack.WriteCell(callerUserId);
+	CreateTimer(followTime, Timer_ExpireFollowTracking, pack, TIMER_FLAG_NO_MAPCHANGE);
+
+	RequestFrame(Frame_PlayVoiceLine, GetVoiceLineFrameData(botClient, VOICELINE_AGREE));
 
 	if (g_cvChatMessage.BoolValue)
 	{
@@ -158,16 +208,98 @@ void StartFollow(int botClient, int callerClient)
 	LogMessage("[FollowMe] Bot %N now following %N (max %.1fs, mindist %.1f).", botClient, callerClient, followTime, followMinDist);
 }
 
-public void Frame_PlayAgreeVoiceLine(any data)
+void DeclineFollow(int botClient)
 {
-	int botClient = data;
+	RequestFrame(Frame_PlayVoiceLine, GetVoiceLineFrameData(botClient, VOICELINE_DECLINE));
+
+	LogMessage("[FollowMe] Bot %N declined to follow - max followers reached.", botClient);
+}
+
+public Action Timer_ExpireFollowTracking(Handle timer, DataPack pack)
+{
+	pack.Reset();
+	int botClient = pack.ReadCell();
+	int expectedUserId = pack.ReadCell();
+
+	// Only clear if this bot's current target still matches the one this timer was started for.
+	// A newer follow order started in the meantime would have overwritten this already.
+	if (g_FollowingTargetUserId[botClient] == expectedUserId)
+	{
+		g_FollowingTargetUserId[botClient] = 0;
+	}
+
+	return Plugin_Continue;
+}
+
+public Action Timer_HealthCheck(Handle timer)
+{
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (g_FollowingTargetUserId[i] == 0)
+		{
+			continue;
+		}
+
+		if (!IsClientInGame(i) || !IsFakeClient(i) || !IsPlayerAlive(i))
+		{
+			g_FollowingTargetUserId[i] = 0;
+			continue;
+		}
+
+		NavBot bot = view_as<NavBot>(i);
+		NavBotHealthState state = bot.GetHealthState();
+
+		if (state != NAVBOT_HEALTH_OK)
+		{
+			bot.SendPluginCommand(NAVBOT_PLUGINCMD_STOPCMD);
+			g_FollowingTargetUserId[i] = 0;
+
+			RequestFrame(Frame_PlayVoiceLine, GetVoiceLineFrameData(i, VOICELINE_NEEDHEALTH));
+
+			LogMessage("[FollowMe] Bot %N broke off following due to low health.", i);
+		}
+	}
+
+	return Plugin_Continue;
+}
+
+// Packs botClient (low 16 bits) and VoiceLineType (high bits) into a single 'any' cell for RequestFrame.
+any GetVoiceLineFrameData(int botClient, VoiceLineType lineType)
+{
+	return (botClient & 0xFFFF) | (view_as<int>(lineType) << 16);
+}
+
+public void Frame_PlayVoiceLine(any data)
+{
+	int botClient = data & 0xFFFF;
+	VoiceLineType lineType = view_as<VoiceLineType>(data >> 16);
 
 	if (!IsClientInGame(botClient) || !IsFakeClient(botClient) || !IsPlayerAlive(botClient))
 	{
 		return;
 	}
 
-	char szInternal[64] = "Acknowledge";
-	char szExternal[64] = "#VOICE_AGREE";
+	char szInternal[64];
+	char szExternal[64];
+
+	switch (lineType)
+	{
+		case VOICELINE_AGREE:
+		{
+			strcopy(szInternal, sizeof(szInternal), "Acknowledge");
+			strcopy(szExternal, sizeof(szExternal), "#VOICE_AGREE");
+		}
+		case VOICELINE_DECLINE:
+		{
+			strcopy(szInternal, sizeof(szInternal), "Decline");
+			strcopy(szExternal, sizeof(szExternal), "#VOICE_DISAGREE");
+		}
+		case VOICELINE_NEEDHEALTH:
+		{
+			strcopy(szInternal, sizeof(szInternal), "NeedHealth");
+			strcopy(szExternal, sizeof(szExternal), "#VOICE_NEED_HEALTH");
+		}
+	}
+
 	SDKCall(g_hSDKVoiceMenu, botClient, szInternal, szExternal);
 }
