@@ -5,22 +5,16 @@
 #include <sdktools>
 #include <dhooks>
 
-// claude.ai guided by DNA.styx
-//
-// Zombie Panic: Source doesn't write kills, chat, connect IPs,
-// disconnects, or "entered the game" lines to the server log file, even
-// though the events happen normally in-game. This breaks HLstatsX, which
-// reads the log file (and RCON status, which is also non-standard on
-// this server) to track kills/deaths/skill, chat history, GeoIP/country
-// flags, and ConnectAnnounce.
-//
-// This plugin watches those events directly and writes the missing
-// lines to the log in the standard format HLstatsX already expects.
-// The "entered the game" line/format was confirmed directly against the
-// HLstatsZ daemon's own source (doEvent_EnterGame in
-// HLstats_EventHandlers.plib, github.com/SnipeZilla/HLSTATS-2).
+/**
+ * claude.ai guided by DNA.styx
+ *
+ * ZPS doesn't write kills, chat, connects, disconnects, or "entered the
+ * game" to the server log, breaking HLstatsX. This plugin watches those
+ * events directly and writes the missing lines in HLstatsX's expected
+ * format.
+ */
 
-#define PLUGIN_VERSION "1.9.13"
+#define PLUGIN_VERSION "1.9.16"
 #define MAX_TEAMS 8
 #define TEAM_SURVIVORS 2
 #define TEAM_ZOMBIES 3
@@ -50,22 +44,12 @@ public void OnPluginStart()
 	SetupEscapeDetour();
 }
 
-// Credits objective-map (zpo_*) survivors who reach trigger_escape at the
-// moment they escape, rather than relying solely on Round_End.Human's
-// IsPlayerAlive()/team check in LogRoundWin. Confirmed via live console
-// logs (08/01/2026) that a round can win (Team "Survivors" triggered
-// "zps_survivor_win") with zero per-player triggered lines following it,
-// despite human survivors still active seconds later - the working theory
-// is that escaping (CZP_Player::SetEscaped, called the same way for both
-// the trigger_escape entity and the AngelScript CZP_Player::Escape() API
-// per api.zombiepanicsource.com's own description) removes the player from
-// whatever IsPlayerAlive()/team state LogRoundWin checks by round end.
-// This hook is a global engine function - one signature covers every
-// trigger_escape on every map, no per-map work needed.
-//
-// Signature/arguments confirmed against the ZPSUTIL extension's own
-// gamedata (zpsutils.txt, "OnEscapeByTrigger") and reference hook
-// (Hook_OnEscapeByTrigger in its source) - not guessed.
+/**
+ * Credits objective-map (zpo_*) survivors at the moment they touch
+ * trigger_escape, since Round_End.Human's IsPlayerAlive()/team check in
+ * LogRoundWin misses them - escaping moves the player to team 0 before
+ * round end.
+ */
 void SetupEscapeDetour()
 {
 	char gamedataPath[PLATFORM_MAX_PATH];
@@ -107,12 +91,6 @@ public MRESReturn Hook_OnEscapeByTrigger(int pThis, DHookParam hParams)
 	return MRES_Ignored;
 }
 
-// Only credited on objective maps, matching the existing
-// zps_survivor_alive_<map> convention built in Event_ClientSound's
-// Round_End.Human branch. Standard zps_* survival maps don't rely on
-// trigger_escape for their win condition, so this is a no-op there -
-// if it does fire, it's not double-counted against anything since
-// zps_survivor_alive is only ever logged from LogRoundWin.
 void LogPlayerEscape(int client)
 {
 	if (!IsObjectiveMap())
@@ -120,7 +98,9 @@ void LogPlayerEscape(int client)
 		return;
 	}
 
-	if (client < 1 || client > MaxClients || !IsClientInGame(client) || GetClientTeam(client) != TEAM_SURVIVORS)
+	/* No team check - escaping moves the player to team 0
+	 * (spectator/unassigned) before this Post hook runs. */
+	if (client < 1 || client > MaxClients || !IsClientInGame(client))
 	{
 		return;
 	}
@@ -154,11 +134,6 @@ public void OnClientAuthorized(int client, const char[] auth)
 	GetClientName(client, playerName, sizeof(playerName));
 	GetClientAuthId(client, AuthId_Steam2, playerAuth, sizeof(playerAuth));
 
-	// Team is intentionally blank here - team selection hasn't happened yet
-	// at authorization time, matching standard engine connect-line behavior
-	// on other mods (e.g. DoD:S/CS:S also log connects with an empty team).
-	// Port is a placeholder - confirmed the daemon's parsing regex discards
-	// it and only keeps the IP portion.
 	LogToGame("\"%s<%d><%s><>\" connected, address \"%s:0\"",
 		playerName, GetClientUserId(client), playerAuth, ip);
 }
@@ -170,11 +145,6 @@ public void OnClientPutInServer(int client)
 		return;
 	}
 
-	// Matches doEvent_EnterGame in the daemon, which is what drives
-	// ConnectAnnounce (and requires this line to fire after the
-	// "connected, address" line, since it needs an existing player
-	// record with a valid userid - guaranteed here since
-	// OnClientAuthorized always fires before OnClientPutInServer).
 	char playerName[MAX_NAME_LENGTH], playerAuth[32], playerTeam[32];
 	GetClientName(client, playerName, sizeof(playerName));
 	GetClientAuthId(client, AuthId_Steam2, playerAuth, sizeof(playerAuth));
@@ -186,14 +156,6 @@ public void OnClientPutInServer(int client)
 
 public void OnClientDisconnect(int client)
 {
-	// Unlike OnClientAuthorized, bots are NOT skipped here. The daemon has
-	// no other way to learn a bot has left (ZPS doesn't log bot
-	// connects/disconnects natively, and NavBot's quota system cycles bots
-	// constantly), so without this line every bot that's ever appeared in
-	// a kill/weaponstats line stays "currently playing" forever. The
-	// daemon's own disconnect handler already has bot-specific logic that
-	// correctly excludes them from stats (matching the server's
-	// IgnoreBots setting) while still removing them from tracking.
 	char playerName[MAX_NAME_LENGTH], playerAuth[32], playerTeam[32];
 	GetClientName(client, playerName, sizeof(playerName));
 	GetClientAuthId(client, AuthId_Steam2, playerAuth, sizeof(playerAuth));
@@ -206,45 +168,8 @@ public void OnClientDisconnect(int client)
 public void OnMapStart()
 {
 	CacheTeamNames();
-	HookAllEscapeTriggers();
 }
 
-// Alternative to the CTrigger_Escape::Escape DHook detour (SetupEscapeDetour /
-// Hook_OnEscapeByTrigger) - hooks trigger_escape's own standard Hammer
-// output (OnPlayerEscape, confirmed in Zombie Panic! Source.fgd.txt) instead
-// of the underlying C++ function. Confirmed via zpo_harvest's own entity
-// dump (project knowledge) that it has a real trigger_escape entity
-// ("gamewinhuman", parented to rescuevehicle_train) wired to
-// "OnPlayerEscape" -> AngelScript Obj_Escaped() - so this output does fire
-// on this map. No gamedata/signature needed, unlike the DHook approach,
-// which produced zero firings all day on every objective map despite this
-// entity existing - worth running both in parallel to see which one
-// actually works before retiring the DHook version.
-void HookAllEscapeTriggers()
-{
-	int entity = INVALID_ENT_REFERENCE;
-
-	while ((entity = FindEntityByClassname(entity, "trigger_escape")) != INVALID_ENT_REFERENCE)
-	{
-		HookSingleEntityOutput(entity, "OnPlayerEscape", Hook_OnPlayerEscapeOutput, false);
-	}
-}
-
-// "activator" is the entity that touched the trigger, per standard Source
-// entity I/O semantics (matches the existing HookSingleEntityOutput calls
-// already used throughout zps_objective_support for other trigger/button
-// outputs on this same map). OnPlayerEscape itself carries no parameters
-// (FGD: output OnPlayerEscape(void)), so activator is the only way to get
-// the escaping player back out of this callback.
-void Hook_OnPlayerEscapeOutput(const char[] output, int caller, int activator, float delay)
-{
-	LogPlayerEscape(activator);
-}
-
-// Proven approach used by SuperLogs/HLstatsX's loghelper.inc (GetTeams()):
-// query the engine's own team list directly via SourceMod natives rather
-// than relying on the team_info broadcast event, which testing confirmed
-// does not fire on this server.
 void CacheTeamNames()
 {
 	int teamCount = GetTeamCount();
@@ -271,13 +196,10 @@ void GetTeamNameSafe(int team, char[] buffer, int maxlen)
 	}
 }
 
-// Combines the IsClientInGame guard with team lookup in one place, used
-// everywhere GetClientTeam is needed. GetClientTeam can throw "Client X
-// is not in game" for clients invalidated right before the calling
-// callback runs (confirmed via SourceMod error log on OnClientDisconnect,
-// likely due to NavBot's quota-cycle churn) - centralizing the guard here
-// means every call site is protected the same way rather than relying on
-// guards living at different points in different functions.
+/**
+ * Guards GetClientTeam, which can throw for clients invalidated right
+ * before the calling callback runs (seen on OnClientDisconnect).
+ */
 void GetTeamNameForClient(int client, char[] buffer, int maxlen)
 {
 	if (IsClientInGame(client))
@@ -297,15 +219,10 @@ public void Event_PlayerFeed(Event event, const char[] name, bool dontBroadcast)
 	bool death    = event.GetBool("death");
 	bool headshot = event.GetBool("headshot");
 
-	// Environmental deaths: attacker=0 means a world/map source killed the player.
-	// FALL (dmgbits 32), DROWN (dmgbits 16384), BURN (dmgbits 8 or 268435456),
-	// and EXPLODING_BARREL (dmgbits exactly 134217792) are logged. trigger_hurt
-	// generic (dmgbits 0) and crush (dmgbits 1) are skipped — confirmed via
-	// feed logger analysis. entityflame (268435456) is ZPS-specific fire
-	// damage, mapped to zps_burn. dmgbits 134217792 is a confirmed weapon=
-	// "physics" self-kill (exploding barrel) — matched by exact value, not
-	// bitmask, since only one sample has been observed to date and the
-	// underlying bit composition hasn't been confirmed as a stable signature.
+	/* Environmental deaths: attacker=0 means a world/map source killed the player.
+	 * FALL (dmgbits 32), DROWN (dmgbits 16384), BURN (dmgbits 8 or 268435456),
+	 * EXPLODING_BARREL (dmgbits exactly 134217792). trigger_hurt generic
+	 * (dmgbits 0) and crush (dmgbits 1) are skipped. */
 	if (victim > 0 && attacker <= 0 && death && IsClientInGame(victim))
 	{
 		int dmgbits = event.GetInt("dmgbits");
@@ -339,13 +256,8 @@ public void Event_PlayerFeed(Event event, const char[] name, bool dontBroadcast)
 				victimName, GetClientUserId(victim), victimAuth, victimTeam,
 				suicideWeapon);
 
-			// Additional "triggered" line so these deaths also show as
-			// zero-reward PlayerActions on the Actions page, matching the
-			// zps_panic pattern. Requires matching hlstats_Actions rows
-			// (game='zps', code=zps_fall/zps_drown/zps_burn/zps_exploding_barrel) - deliberately
-			// reuses the same code strings as the hlstats_Weapons entries
-			// since Actions and Weapons are separate tables with no naming
-			// conflict.
+			/* Additional "triggered" line so these deaths also show as
+			 * zero-reward PlayerActions on the Actions page. */
 			LogToGame("\"%s<%d><%s><%s>\" triggered \"%s\"",
 				victimName, GetClientUserId(victim), victimAuth, victimTeam,
 				suicideWeapon);
@@ -353,8 +265,8 @@ public void Event_PlayerFeed(Event event, const char[] name, bool dontBroadcast)
 		return;
 	}
 
-	// Player-on-player kills and infections only.
-	// All other world/environment deaths are skipped.
+	/* Player-on-player kills and infections only.
+	 * All other world/environment deaths are skipped. */
 	if (victim <= 0 || attacker <= 0 || victim == attacker)
 	{
 		return;
@@ -367,10 +279,7 @@ public void Event_PlayerFeed(Event event, const char[] name, bool dontBroadcast)
 	char weapon[64];
 	event.GetString("weapon", weapon, sizeof(weapon));
 
-	// Strip "weapon_" classname prefix if present, matching the short
-	// weapon names HLstatsX/SuperLogs already use (e.g. "weapon_ak47" -> "ak47").
-	// "zombie_claws_of_death" has no such prefix and passes through unchanged,
-	// matching the daemon's existing special case for it.
+	/* Strip "weapon_" classname prefix if present. */
 	if (strncmp(weapon, "weapon_", 7) == 0)
 	{
 		strcopy(weapon, sizeof(weapon), weapon[7]);
@@ -381,14 +290,8 @@ public void Event_PlayerFeed(Event event, const char[] name, bool dontBroadcast)
 	GetClientAuthId(attacker, AuthId_Steam2, attackerAuth, sizeof(attackerAuth));
 	GetTeamNameForClient(attacker, attackerTeam, sizeof(attackerTeam));
 
-	// When weapon is "infected" and death is false, the carrier has tagged a
-	// survivor with infection - the survivor is still alive and may self-heal.
-	// Logged as a Player-vs-Player action ("triggered X against Y") rather
-	// than a plain player action, since hlstats_Actions.zps_infected_player
-	// is now for_PlayerPlayerActions=1 / for_PlayerActions=0 (v1.9.3). The
-	// daemon's hlstats.pl "triggered ... against ..." regex requires both
-	// full player strings (confirmed against HLstats_EventHandlers.plib
-	// doEvent_PlayerPlayerAction call path).
+	/* When weapon is "infected" and death is false, the carrier has tagged a
+	 * survivor with infection. */
 	if (StrEqual(weapon, "infected") && !death)
 	{
 		char victimName[MAX_NAME_LENGTH], victimAuth[32], victimTeam[32];
@@ -402,7 +305,7 @@ public void Event_PlayerFeed(Event event, const char[] name, bool dontBroadcast)
 		return;
 	}
 
-	// Skip non-death events for all other weapons.
+	/* Skip non-death events for all other weapons. */
 	if (!death)
 	{
 		return;
@@ -433,27 +336,15 @@ public void Event_ClientSound(Event event, const char[] name, bool dontBroadcast
 
 	if (StrContains(sound, "Round_Starting", false) != -1)
 	{
-		// Resets the daemon's internal round_status counter, which gates
-		// team-reward processing in doEvent_TeamAction (confirmed via
-		// HLstatsZ source, HLstats_EventHandlers.plib). ZPS's native
-		// round_start event is unreliable, so without this line only the
-		// first round win after a daemon restart would ever pay out -
-		// round_status never resets and every subsequent win gets
-		// silently ignored as "round in progress".
+		/* Resets the daemon's internal round_status counter, which gates
+		 * team-reward processing. */
 		LogToGame("World triggered \"Round_Start\"");
 	}
 	else if (StrContains(sound, "Round_End.Human", false) != -1)
 	{
-		// Objective maps (zpo_*) log a per-map action built as
-		// "zps_survivor_alive_<mapname>", grouped alphabetically under
-		// the existing "zps_survivor_alive" naming convention in
-		// HLstatsX. Built dynamically from GetCurrentMap() - no map names
-		// live in this plugin, just add the matching hlstats_Actions row
-		// as maps are added. Note: the daemon's own map-prefix lookup
-		// (doEvent_PlayerAction, HLstats_EventHandlers.plib) only checks
-		// <map>_<action>, not <action>_<map>, so that mechanism doesn't
-		// apply here - this string is matched as a plain exact action
-		// code instead. zps_* survival maps (non-objective) are unaffected.
+		/* Objective maps (zpo_*) log a per-map action built as
+		 * "zps_survivor_alive_<mapname>". Built dynamically from
+		 * GetCurrentMap(). */
 		char aliveAction[64];
 		if (IsObjectiveMap())
 		{
@@ -472,12 +363,14 @@ public void Event_ClientSound(Event event, const char[] name, bool dontBroadcast
 	{
 		LogRoundWin(TEAM_ZOMBIES, "zps_zombie_win", "zps_zombie_alive");
 	}
-	// Round_End.Stalemate intentionally produces no log lines - no
-	// reward is configured for a draw.
+	/* Round_End.Stalemate intentionally produces no log lines - no
+	 * reward is configured for a draw. */
 }
 
-// True if the current map is an objective-type ZPS map (zpo_ prefix),
-// as opposed to a standard survival map (zps_ prefix).
+/**
+ * True if the current map is an objective-type ZPS map (zpo_ prefix),
+ * as opposed to a standard survival map (zps_ prefix).
+ */
 bool IsObjectiveMap()
 {
 	char map[PLATFORM_MAX_PATH];
@@ -486,10 +379,12 @@ bool IsObjectiveMap()
 	return (strncmp(map, "zpo_", 4, false) == 0);
 }
 
-// Single Team-triggered line rewards every tracked player on the
-// winning team via the daemon's rewardTeam(), regardless of alive/dead
-// status. Per-player triggered lines on top of that give an additional
-// bonus only to players still alive when the round ended.
+/**
+ * Team-triggered line rewards every tracked player on the winning team,
+ * regardless of alive/dead status. Per-player triggered lines on top of
+ * that give an additional bonus only to players still alive when the
+ * round ended.
+ */
 void LogRoundWin(int winningTeam, const char[] teamAction, const char[] aliveAction)
 {
 	char teamName[32];
@@ -518,18 +413,10 @@ public void Event_ClientSoundPlayer(Event event, const char[] name, bool dontBro
 	char sound[64];
 	event.GetString("sound", sound, sizeof(sound));
 
-	// ZPlayer.Panic fires via clientsound_player when a survivor panics.
-	// Confirmed via sound monitor log (07/01/2026). Logged as a zero-point
-	// player action for statistical tracking only (defensive skill).
-	//
-	// Carrier_Action.Spotted fires via clientsound_player when a Carrier
-	// zombie uses the Spot skill. Confirmed via zps_sound_monitor.log
-	// (07/25-07/26/2026) and cross-checked against zps_navbot_zombie_skills.sp
-	// v0.8.0, which independently detects the same sound string for its own
-	// local logging. Logged as a 1-point player action (aggressive skill,
-	// vs. zps_panic's 0 points as a defensive skill - value set per
-	// DNA.styx direction). Tagged (who was spotted) is intentionally not
-	// correlated/logged yet - deferred.
+	/* ZPlayer.Panic fires via clientsound_player when a survivor panics.
+	 *
+	 * Carrier_Action.Spotted fires via clientsound_player when a Carrier
+	 * zombie uses the Spot skill. */
 	char action[32];
 
 	if (StrEqual(sound, "ZPlayer.Panic", false))
@@ -571,8 +458,8 @@ public Action Command_Say(int client, const char[] command, int args)
 	char text[192];
 	GetCmdArgString(text, sizeof(text));
 
-	// The engine wraps the say argument string in quotes (e.g. "hello") -
-	// strip them so the log doesn't end up with doubled/nested quotes.
+	/* The engine wraps the say argument string in quotes (e.g. "hello") -
+	 * strip them so the log doesn't end up with doubled/nested quotes. */
 	int len = strlen(text);
 	if (len >= 2 && text[0] == '"' && text[len - 1] == '"')
 	{
@@ -587,9 +474,9 @@ public Action Command_Say(int client, const char[] command, int args)
 	GetClientAuthId(client, AuthId_Steam2, playerAuth, sizeof(playerAuth));
 	GetTeamNameForClient(client, playerTeam, sizeof(playerTeam));
 
-	// Per DNA.styx: log all chat (public + team) through one "say" stream,
-	// with team-restricted messages marked via a "(Team)" text prefix
-	// rather than a separate say_team verb.
+	/* All chat (public + team) logged through one "say" stream, with
+	 * team-restricted messages marked via a "(Team)" text prefix rather
+	 * than a separate say_team verb. */
 	char message[224];
 	if (teamOnly)
 	{
