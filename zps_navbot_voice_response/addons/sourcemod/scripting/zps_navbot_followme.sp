@@ -29,13 +29,13 @@ public Plugin myinfo =
 	name        = "ZPS NavBot FollowMe",
 	author      = "Claude.ai guided by DNA.styx",
 	description = "Nearest survivor Navbot follows the caller on #VOICE_FOLLOWME.",
-	version     = "0.8.1",
+	version     = "0.10.0",
 	url         = "https://github.com/DNA-styx/ZPS-Helper-Plugins"
 };
 
 public void OnPluginStart()
 {
-	CreateConVar("sm_zps_navbot_followme_version", "0.8.1", "ZPS NavBot FollowMe version.", FCVAR_NOTIFY | FCVAR_DONTRECORD);
+	CreateConVar("sm_zps_navbot_followme_version", "0.10.0", "ZPS NavBot FollowMe version.", FCVAR_NOTIFY | FCVAR_DONTRECORD);
 	g_cvFollowTime = CreateConVar("sm_zps_navbot_followme_time", "300.0", "Max time in seconds a bot will follow before the order expires.", FCVAR_PROTECTED);
 	g_cvFollowMinDist = CreateConVar("sm_zps_navbot_followme_mindist", "120.0", "Minimum distance the bot keeps from the followed player.", FCVAR_PROTECTED);
 	g_cvChatMessage = CreateConVar("sm_zps_navbot_followme_chatmsg", "0", "Print a chat message to the caller when a bot starts following. 0 = off, 1 = on.", FCVAR_PROTECTED);
@@ -84,11 +84,29 @@ public void OnPluginStart()
 	delete gc;
 
 	CreateTimer(2.0, Timer_HealthCheck, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+
+	AddCommandListener(Command_OnBotPanic, "dopanic");
 }
 
 public void OnClientDisconnect(int client)
 {
 	g_FollowingTargetUserId[client] = 0;
+}
+
+public Action Command_OnBotPanic(int client, const char[] command, int argc)
+{
+	if (!(1 <= client <= MaxClients) || g_FollowingTargetUserId[client] == 0)
+	{
+		return Plugin_Continue;
+	}
+
+	NavBot bot = view_as<NavBot>(client);
+	bot.SendPluginCommand(NAVBOT_PLUGINCMD_STOPCMD);
+	g_FollowingTargetUserId[client] = 0;
+
+	LogMessage("[FollowMe] Bot %N broke off following due to panic.", client);
+
+	return Plugin_Continue;
 }
 
 public MRESReturn Hook_OnVoiceMenuPost(int client, DHookParam params)
@@ -122,7 +140,7 @@ public MRESReturn Hook_OnVoiceMenuPost(int client, DHookParam params)
 
 	if (followerCount >= g_cvMaxFollowers.IntValue)
 	{
-		DeclineFollow(bot);
+		DeclineFollow(bot, client);
 		return MRES_Ignored;
 	}
 
@@ -189,6 +207,9 @@ void StartFollow(int botClient, int callerClient)
 	NavBot bot = view_as<NavBot>(botClient);
 	bot.SendPluginCommand(NAVBOT_PLUGINCMD_FOLLOW_ENTITY, callerClient, followTime, followMinDist);
 
+	Address controllerAddr = bot.GetPlayerControllerInterface();
+	NavBotPlayerControllerInterface.AimAtEntity(controllerAddr, callerClient, LOOK_ALLY, 1.0, "FollowMe accept");
+
 	g_FollowingTargetUserId[botClient] = callerUserId;
 
 	DataPack pack = new DataPack();
@@ -208,8 +229,12 @@ void StartFollow(int botClient, int callerClient)
 	LogMessage("[FollowMe] Bot %N now following %N (max %.1fs, mindist %.1f).", botClient, callerClient, followTime, followMinDist);
 }
 
-void DeclineFollow(int botClient)
+void DeclineFollow(int botClient, int callerClient)
 {
+	NavBot bot = view_as<NavBot>(botClient);
+	Address controllerAddr = bot.GetPlayerControllerInterface();
+	NavBotPlayerControllerInterface.AimAtEntity(controllerAddr, callerClient, LOOK_ALLY, 1.0, "FollowMe decline");
+
 	RequestFrame(Frame_PlayVoiceLine, GetVoiceLineFrameData(botClient, VOICELINE_DECLINE));
 
 	LogMessage("[FollowMe] Bot %N declined to follow - max followers reached.", botClient);
