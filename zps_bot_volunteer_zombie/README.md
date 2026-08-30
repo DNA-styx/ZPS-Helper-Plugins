@@ -4,9 +4,7 @@ Flags bots to be prioritized as zombies at round start, so real players are less
 
 ## How it works
 
-At `Round_Starting`, every connected bot is flagged via a confirmed engine field that ZPS's own zombie-selection logic (`ChooseRandomZombies()`) checks first. Flagged bots are picked before anyone else. This does not force team changes directly — it lets the game's own selection prioritize bots.
-
-This is not a guarantee. Real players can still occasionally be selected if there aren't enough eligible bots, or if they pick Zombies themselves.
+At `Round_Starting`, every connected bot is flagged via a confirmed engine field that ZPS's own zombie-selection logic (`ChooseRandomZombies()`) checks first.
 
 ## ConVars
 
@@ -26,7 +24,4 @@ Logs one line per round (how many bots were flagged, or why the round was skippe
 ## Requirements
 
 - SourceMod 1.12
-
-## Known limitations
-
-- The engine offset this plugin relies on has changed between ZPS updates before, and may change again. If bots stop being prioritized after a game update, this offset likely needs re-verifying.
+- NavBot
