@@ -1,0 +1,7 @@
+"Phrases"
+{
+	"Horde Warning"
+	{
+		"en"	"All bots are Zombies! Prepare yourself!"
+	}
+}
