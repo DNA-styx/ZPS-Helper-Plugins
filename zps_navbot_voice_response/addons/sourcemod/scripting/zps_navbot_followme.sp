@@ -7,41 +7,38 @@
 #include <navbot>
 
 #define TEAM_SURVIVORS 2
+#define MAX_FOLLOWERS_CAP 8
+#define SQUAD_POLL_INTERVAL 1.0
 
 DynamicDetour g_hVoiceMenuDetour;
 Handle g_hSDKVoiceMenu;
-ConVar g_cvFollowTime;
-ConVar g_cvFollowMinDist;
 ConVar g_cvChatMessage;
+ConVar g_cvSquadDuration;
 ConVar g_cvMaxFollowers;
 
-int g_FollowingTargetUserId[MAXPLAYERS + 1]; // indexed by bot client index, 0 = not tracked as following. Best-effort bookkeeping only - no engine query native exists to confirm live state.
-
-enum VoiceLineType
-{
-	VOICELINE_AGREE = 0,
-	VOICELINE_DECLINE,
-	VOICELINE_NEEDHEALTH
-};
+int g_iSquadLeaderBot[MAXPLAYERS + 1];
+float g_fSquadStartTime[MAXPLAYERS + 1];
 
 public Plugin myinfo =
 {
 	name        = "ZPS NavBot FollowMe",
 	author      = "Claude.ai guided by DNA.styx",
-	description = "Nearest survivor Navbot follows the caller on #VOICE_FOLLOWME.",
-	version     = "0.10.0",
+	description = "Nearest available survivor Navbots form a squad with the caller on #VOICE_FOLLOWME.",
+	version     = "0.11.1",
 	url         = "https://github.com/DNA-styx/ZPS-Helper-Plugins"
 };
 
 public void OnPluginStart()
 {
-	CreateConVar("sm_zps_navbot_followme_version", "0.10.0", "ZPS NavBot FollowMe version.", FCVAR_NOTIFY | FCVAR_DONTRECORD);
-	g_cvFollowTime = CreateConVar("sm_zps_navbot_followme_time", "300.0", "Max time in seconds a bot will follow before the order expires.", FCVAR_PROTECTED);
-	g_cvFollowMinDist = CreateConVar("sm_zps_navbot_followme_mindist", "120.0", "Minimum distance the bot keeps from the followed player.", FCVAR_PROTECTED);
-	g_cvChatMessage = CreateConVar("sm_zps_navbot_followme_chatmsg", "0", "Print a chat message to the caller when a bot starts following. 0 = off, 1 = on.", FCVAR_PROTECTED);
-	g_cvMaxFollowers = CreateConVar("sm_zps_navbot_followme_maxfollowers", "2", "Max number of bots that can follow a single player at once.", FCVAR_PROTECTED);
+	CreateConVar("sm_zps_navbot_followme_version", "0.11.1", "ZPS NavBot FollowMe version.", FCVAR_NOTIFY | FCVAR_DONTRECORD);
+	g_cvChatMessage = CreateConVar("sm_zps_navbot_followme_chatmsg", "0", "Print a chat message to the caller when a bot joins the squad. 0 = off, 1 = on.", FCVAR_PROTECTED);
+	g_cvSquadDuration = CreateConVar("sm_zps_navbot_followme_duration", "300.0", "Time in seconds a follow squad stays active before automatically disbanding.", FCVAR_PROTECTED);
+	g_cvMaxFollowers = CreateConVar("sm_zps_navbot_followme_maxfollowers", "2", "Max number of bots that can join a follow squad (1 to 8).", FCVAR_PROTECTED);
 
 	AutoExecConfig(true, "zps_navbot_followme");
+
+	HookEvent("clientsound", Event_ClientSound);
+	CreateTimer(SQUAD_POLL_INTERVAL, Timer_CheckSquads, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
 
 	char gamedataPath[PLATFORM_MAX_PATH];
 	BuildPath(Path_SM, gamedataPath, sizeof(gamedataPath), "gamedata/zps_navbot_followme.games.txt");
@@ -82,31 +79,28 @@ public void OnPluginStart()
 	}
 
 	delete gc;
-
-	CreateTimer(2.0, Timer_HealthCheck, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
-
-	AddCommandListener(Command_OnBotPanic, "dopanic");
 }
 
-public void OnClientDisconnect(int client)
+public void OnPluginEnd()
 {
-	g_FollowingTargetUserId[client] = 0;
-}
-
-public Action Command_OnBotPanic(int client, const char[] command, int argc)
-{
-	if (!(1 <= client <= MaxClients) || g_FollowingTargetUserId[client] == 0)
+	if (g_hVoiceMenuDetour != null)
 	{
-		return Plugin_Continue;
+		g_hVoiceMenuDetour.Disable(Hook_Post, Hook_OnVoiceMenuPost);
 	}
+}
 
-	NavBot bot = view_as<NavBot>(client);
-	bot.SendPluginCommand(NAVBOT_PLUGINCMD_STOPCMD);
-	g_FollowingTargetUserId[client] = 0;
+void Event_ClientSound(Event event, const char[] name, bool dontBroadcast)
+{
+	char sound[64];
+	event.GetString("sound", sound, sizeof(sound));
 
-	LogMessage("[FollowMe] Bot %N broke off following due to panic.", client);
-
-	return Plugin_Continue;
+	if (StrEqual(sound, "Round_Starting", false))
+	{
+		for (int i = 1; i <= MaxClients; i++)
+		{
+			ClearSquadTracking(i);
+		}
+	}
 }
 
 public MRESReturn Hook_OnVoiceMenuPost(int client, DHookParam params)
@@ -129,48 +123,50 @@ public MRESReturn Hook_OnVoiceMenuPost(int client, DHookParam params)
 		return MRES_Ignored;
 	}
 
-	int bot = FindNearestSurvivorBot(client);
-	if (bot == 0)
+	if (g_iSquadLeaderBot[client] != 0)
+	{
+		HandleRepeatTrigger(client);
+		return MRES_Ignored;
+	}
+
+	int maxFollowers = g_cvMaxFollowers.IntValue;
+
+	if (maxFollowers < 1)
+	{
+		maxFollowers = 1;
+	}
+	else if (maxFollowers > MAX_FOLLOWERS_CAP)
+	{
+		maxFollowers = MAX_FOLLOWERS_CAP;
+	}
+
+	int bots[MAX_FOLLOWERS_CAP];
+	int count;
+	FindNearestSurvivorBots(client, bots, maxFollowers, count);
+
+	if (count == 0)
 	{
 		return MRES_Ignored;
 	}
 
-	int callerUserId = GetClientUserId(client);
-	int followerCount = CountFollowersOf(callerUserId);
-
-	if (followerCount >= g_cvMaxFollowers.IntValue)
-	{
-		DeclineFollow(bot, client);
-		return MRES_Ignored;
-	}
-
-	StartFollow(bot, client);
+	StartFollow(bots, count, client);
 
 	return MRES_Ignored;
 }
 
-int CountFollowersOf(int targetUserId)
-{
-	int count = 0;
-
-	for (int i = 1; i <= MaxClients; i++)
-	{
-		if (g_FollowingTargetUserId[i] == targetUserId)
-		{
-			count++;
-		}
-	}
-
-	return count;
-}
-
-int FindNearestSurvivorBot(int caller)
+void FindNearestSurvivorBots(int caller, int[] bots, int maxBots, int &count)
 {
 	float callerPos[3];
 	GetClientAbsOrigin(caller, callerPos);
 
-	int nearestBot = 0;
-	float nearestDist = -1.0;
+	float bestDist[MAX_FOLLOWERS_CAP];
+	int bestBot[MAX_FOLLOWERS_CAP];
+
+	for (int j = 0; j < maxBots; j++)
+	{
+		bestDist[j] = -1.0;
+		bestBot[j] = 0;
+	}
 
 	for (int i = 1; i <= MaxClients; i++)
 	{
@@ -184,147 +180,304 @@ int FindNearestSurvivorBot(int caller)
 			continue;
 		}
 
+		NavBot bot = view_as<NavBot>(i);
+
+		if (NavBotSquadInterface.IsInASquad(bot.GetSquadInterface()))
+		{
+			continue;
+		}
+
 		float botPos[3];
 		GetClientAbsOrigin(i, botPos);
 		float dist = GetVectorDistance(callerPos, botPos);
 
-		if (nearestDist < 0.0 || dist < nearestDist)
+		for (int slot = 0; slot < maxBots; slot++)
 		{
-			nearestDist = dist;
-			nearestBot = i;
+			if (bestDist[slot] < 0.0 || dist < bestDist[slot])
+			{
+				for (int shift = maxBots - 1; shift > slot; shift--)
+				{
+					bestDist[shift] = bestDist[shift - 1];
+					bestBot[shift] = bestBot[shift - 1];
+				}
+
+				bestDist[slot] = dist;
+				bestBot[slot] = i;
+				break;
+			}
 		}
 	}
 
-	return nearestBot;
+	count = 0;
+
+	for (int j = 0; j < maxBots; j++)
+	{
+		if (bestBot[j] != 0)
+		{
+			bots[count++] = bestBot[j];
+		}
+	}
 }
 
-void StartFollow(int botClient, int callerClient)
+void StartFollow(const int[] bots, int count, int callerClient)
 {
-	float followTime = g_cvFollowTime.FloatValue;
-	float followMinDist = g_cvFollowMinDist.FloatValue;
-	int callerUserId = GetClientUserId(callerClient);
+	NavBot leaderBot = view_as<NavBot>(bots[0]);
+	Address leaderSquad = leaderBot.GetSquadInterface();
 
-	NavBot bot = view_as<NavBot>(botClient);
-	bot.SendPluginCommand(NAVBOT_PLUGINCMD_FOLLOW_ENTITY, callerClient, followTime, followMinDist);
-
-	Address controllerAddr = bot.GetPlayerControllerInterface();
-	NavBotPlayerControllerInterface.AimAtEntity(controllerAddr, callerClient, LOOK_ALLY, 1.0, "FollowMe accept");
-
-	g_FollowingTargetUserId[botClient] = callerUserId;
-
-	DataPack pack = new DataPack();
-	pack.WriteCell(botClient);
-	pack.WriteCell(callerUserId);
-	CreateTimer(followTime, Timer_ExpireFollowTracking, pack, TIMER_FLAG_NO_MAPCHANGE);
-
-	RequestFrame(Frame_PlayVoiceLine, GetVoiceLineFrameData(botClient, VOICELINE_AGREE));
-
-	if (g_cvChatMessage.BoolValue)
+	if (!NavBotSquadInterface.CreateSquad(leaderSquad, callerClient))
 	{
-		char botName[MAX_NAME_LENGTH];
-		GetClientName(botClient, botName, sizeof(botName));
-		PrintToChat(callerClient, "\x05[NAV]\x01 %s is now following you.", botName);
+		LogMessage("[FollowMe] CreateSquad failed for bot %N (caller %N).", bots[0], callerClient);
+		return;
 	}
 
-	LogMessage("[FollowMe] Bot %N now following %N (max %.1fs, mindist %.1f).", botClient, callerClient, followTime, followMinDist);
-}
+	g_iSquadLeaderBot[callerClient] = bots[0];
+	g_fSquadStartTime[callerClient] = GetGameTime();
 
-void DeclineFollow(int botClient, int callerClient)
-{
-	NavBot bot = view_as<NavBot>(botClient);
-	Address controllerAddr = bot.GetPlayerControllerInterface();
-	NavBotPlayerControllerInterface.AimAtEntity(controllerAddr, callerClient, LOOK_ALLY, 1.0, "FollowMe decline");
+	OnBotJoinedSquad(bots[0], callerClient);
 
-	RequestFrame(Frame_PlayVoiceLine, GetVoiceLineFrameData(botClient, VOICELINE_DECLINE));
-
-	LogMessage("[FollowMe] Bot %N declined to follow - max followers reached.", botClient);
-}
-
-public Action Timer_ExpireFollowTracking(Handle timer, DataPack pack)
-{
-	pack.Reset();
-	int botClient = pack.ReadCell();
-	int expectedUserId = pack.ReadCell();
-
-	// Only clear if this bot's current target still matches the one this timer was started for.
-	// A newer follow order started in the meantime would have overwritten this already.
-	if (g_FollowingTargetUserId[botClient] == expectedUserId)
+	for (int i = 1; i < count; i++)
 	{
-		g_FollowingTargetUserId[botClient] = 0;
+		if (NavBotSquadInterface.AddMemberToSquad(leaderSquad, bots[i]))
+		{
+			OnBotJoinedSquad(bots[i], callerClient);
+		}
+	}
+}
+
+void OnBotJoinedSquad(int botClient, int callerClient)
+{
+	RequestFrame(Frame_PlayAgreeVoiceLine, botClient);
+	AnnounceJoin(botClient, callerClient);
+
+	LogMessage("[FollowMe] Bot %N joined the follow squad for %N.", botClient, callerClient);
+}
+
+void HandleRepeatTrigger(int caller)
+{
+	int leaderBot = g_iSquadLeaderBot[caller];
+
+	if (!IsClientInGame(leaderBot) || !IsFakeClient(leaderBot))
+	{
+		ClearSquadTracking(caller);
+		return;
 	}
 
-	return Plugin_Continue;
+	NavBot leaderNavBot = view_as<NavBot>(leaderBot);
+	Address leaderSquad = leaderNavBot.GetSquadInterface();
+
+	if (!NavBotSquadInterface.IsInASquad(leaderSquad))
+	{
+		// Tracking was stale, squad is already gone. Let the next trigger form a new one.
+		ClearSquadTracking(caller);
+		return;
+	}
+
+	AnnounceCurrentSquad(caller, leaderSquad);
 }
 
-public Action Timer_HealthCheck(Handle timer)
+void AnnounceCurrentSquad(int caller, Address leaderSquad)
 {
-	for (int i = 1; i <= MaxClients; i++)
+	if (!g_cvChatMessage.BoolValue)
 	{
-		if (g_FollowingTargetUserId[i] == 0)
+		return;
+	}
+
+	char list[192];
+	list[0] = '\0';
+	int botsFound = 0;
+
+	int count = NavBotSquadInterface.GetSquadMemberCount(leaderSquad);
+
+	for (int i = 0; i < count; i++)
+	{
+		int member = NavBotSquadInterface.GetSquadMemberEntity(leaderSquad, i);
+
+		if (member <= 0 || !IsClientInGame(member) || !IsFakeClient(member))
 		{
 			continue;
 		}
 
-		if (!IsClientInGame(i) || !IsFakeClient(i) || !IsPlayerAlive(i))
+		char name[MAX_NAME_LENGTH];
+		GetClientName(member, name, sizeof(name));
+
+		if (botsFound > 0)
 		{
-			g_FollowingTargetUserId[i] = 0;
-			continue;
+			StrCat(list, sizeof(list), ", ");
 		}
 
-		NavBot bot = view_as<NavBot>(i);
-		NavBotHealthState state = bot.GetHealthState();
-
-		if (state != NAVBOT_HEALTH_OK)
-		{
-			bot.SendPluginCommand(NAVBOT_PLUGINCMD_STOPCMD);
-			g_FollowingTargetUserId[i] = 0;
-
-			RequestFrame(Frame_PlayVoiceLine, GetVoiceLineFrameData(i, VOICELINE_NEEDHEALTH));
-
-			LogMessage("[FollowMe] Bot %N broke off following due to low health.", i);
-		}
+		StrCat(list, sizeof(list), name);
+		botsFound++;
 	}
 
-	return Plugin_Continue;
+	if (botsFound == 0)
+	{
+		PrintToChat(caller, "\x05[NAV]\x01 Your squad has no bots in it right now.");
+	}
+	else
+	{
+		PrintToChat(caller, "\x05[NAV]\x01 Your squad: %s", list);
+	}
 }
 
-// Packs botClient (low 16 bits) and VoiceLineType (high bits) into a single 'any' cell for RequestFrame.
-any GetVoiceLineFrameData(int botClient, VoiceLineType lineType)
+void AnnounceJoin(int botClient, int callerClient)
 {
-	return (botClient & 0xFFFF) | (view_as<int>(lineType) << 16);
+	if (!g_cvChatMessage.BoolValue)
+	{
+		return;
+	}
+
+	char botName[MAX_NAME_LENGTH];
+	GetClientName(botClient, botName, sizeof(botName));
+	PrintToChat(callerClient, "\x05[NAV]\x01 %s has joined your squad.", botName);
 }
 
-public void Frame_PlayVoiceLine(any data)
+public void Frame_PlayAgreeVoiceLine(any data)
 {
-	int botClient = data & 0xFFFF;
-	VoiceLineType lineType = view_as<VoiceLineType>(data >> 16);
+	int botClient = data;
 
 	if (!IsClientInGame(botClient) || !IsFakeClient(botClient) || !IsPlayerAlive(botClient))
 	{
 		return;
 	}
 
-	char szInternal[64];
-	char szExternal[64];
+	char szInternal[64] = "Acknowledge";
+	char szExternal[64] = "#VOICE_AGREE";
+	SDKCall(g_hSDKVoiceMenu, botClient, szInternal, szExternal);
+}
 
-	switch (lineType)
+public Action Timer_CheckSquads(Handle timer)
+{
+	for (int caller = 1; caller <= MaxClients; caller++)
 	{
-		case VOICELINE_AGREE:
+		int leaderBot = g_iSquadLeaderBot[caller];
+
+		if (leaderBot == 0)
 		{
-			strcopy(szInternal, sizeof(szInternal), "Acknowledge");
-			strcopy(szExternal, sizeof(szExternal), "#VOICE_AGREE");
+			continue;
 		}
-		case VOICELINE_DECLINE:
+
+		if (!IsClientInGame(caller))
 		{
-			strcopy(szInternal, sizeof(szInternal), "Decline");
-			strcopy(szExternal, sizeof(szExternal), "#VOICE_DISAGREE");
+			ClearSquadTracking(caller);
+			continue;
 		}
-		case VOICELINE_NEEDHEALTH:
+
+		if (!IsClientInGame(leaderBot) || !IsFakeClient(leaderBot))
 		{
-			strcopy(szInternal, sizeof(szInternal), "NeedHealth");
-			strcopy(szExternal, sizeof(szExternal), "#VOICE_NEED_HEALTH");
+			ClearSquadTracking(caller);
+			continue;
+		}
+
+		NavBot leaderNavBot = view_as<NavBot>(leaderBot);
+		Address leaderSquad = leaderNavBot.GetSquadInterface();
+
+		if (!NavBotSquadInterface.IsInASquad(leaderSquad))
+		{
+			// Squad already gone, e.g. the leader bot died and respawned.
+			ClearSquadTracking(caller);
+			continue;
+		}
+
+		bool expired = (GetGameTime() - g_fSquadStartTime[caller]) >= g_cvSquadDuration.FloatValue;
+		bool critical = !expired && IsAnyMemberCritical(leaderSquad);
+
+		if (expired || critical)
+		{
+			DisbandSquad(caller, leaderSquad, critical);
 		}
 	}
 
+	return Plugin_Continue;
+}
+
+bool IsAnyMemberCritical(Address leaderSquad)
+{
+	int count = NavBotSquadInterface.GetSquadMemberCount(leaderSquad);
+
+	for (int i = 0; i < count; i++)
+	{
+		int member = NavBotSquadInterface.GetSquadMemberEntity(leaderSquad, i);
+
+		if (member <= 0 || !IsClientInGame(member) || !IsFakeClient(member) || !IsPlayerAlive(member))
+		{
+			continue;
+		}
+
+		NavBot bot = view_as<NavBot>(member);
+
+		if (bot.GetHealthState() == NAVBOT_HEALTH_CRITICAL)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void DisbandSquad(int caller, Address leaderSquad, bool critical)
+{
+	int members[MAX_FOLLOWERS_CAP];
+	int botCount = 0;
+
+	int count = NavBotSquadInterface.GetSquadMemberCount(leaderSquad);
+
+	for (int i = 0; i < count && botCount < MAX_FOLLOWERS_CAP; i++)
+	{
+		int member = NavBotSquadInterface.GetSquadMemberEntity(leaderSquad, i);
+
+		if (member > 0 && IsClientInGame(member) && IsFakeClient(member))
+		{
+			members[botCount++] = member;
+		}
+	}
+
+	NavBotSquadInterface.DestroySquad(leaderSquad);
+
+	for (int i = 0; i < botCount; i++)
+	{
+		RequestFrame(Frame_PlayRunawayVoiceLine, members[i]);
+	}
+
+	AnnounceDisband(caller, critical);
+
+	LogMessage("[FollowMe] Squad disbanded for %N (%s).", caller, critical ? "critical health" : "duration expired");
+
+	ClearSquadTracking(caller);
+}
+
+void AnnounceDisband(int caller, bool critical)
+{
+	if (!g_cvChatMessage.BoolValue || !IsClientInGame(caller))
+	{
+		return;
+	}
+
+	if (critical)
+	{
+		PrintToChat(caller, "\x05[NAV]\x01 Your squad has disbanded, a member was critically injured.");
+	}
+	else
+	{
+		PrintToChat(caller, "\x05[NAV]\x01 Your squad has disbanded.");
+	}
+}
+
+void ClearSquadTracking(int caller)
+{
+	g_iSquadLeaderBot[caller] = 0;
+	g_fSquadStartTime[caller] = 0.0;
+}
+
+public void Frame_PlayRunawayVoiceLine(any data)
+{
+	int botClient = data;
+
+	if (!IsClientInGame(botClient) || !IsFakeClient(botClient) || !IsPlayerAlive(botClient))
+	{
+		return;
+	}
+
+	char szInternal[64] = "Escape";
+	char szExternal[64] = "#VOICE_RUNAWAY";
 	SDKCall(g_hSDKVoiceMenu, botClient, szInternal, szExternal);
 }
