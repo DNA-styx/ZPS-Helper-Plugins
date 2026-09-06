@@ -2,6 +2,10 @@
 {
 	"Horde Warning"
 	{
-		"en"	"All bots are Zombies! Prepare yourself!"
+		"en"	"All bots are Zombies! You have {1} seconds to prepare!"
+	}
+	"Horde Attack"
+	{
+		"en"	"The horde is coming! Zombies are attacking!"
 	}
 }

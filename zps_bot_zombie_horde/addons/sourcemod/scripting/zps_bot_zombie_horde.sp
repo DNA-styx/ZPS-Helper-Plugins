@@ -9,22 +9,30 @@
 
 #include <sourcemod>
 #include <sdktools>
+#include <navbot>
 
-#define PLUGIN_VERSION      "0.2.1"
+#define PLUGIN_VERSION      "0.4.2"
 
 #define TEAM_SURVIVOR       2
 #define TEAM_ZOMBIE         3
 
 #define ROUND_START_DELAY   12.0
+#define FREEZE_POLL_INTERVAL 1.0
+#define FREEZE_POLL_TICKS    5
 
 ConVar g_cvVersion;
 ConVar g_cvEnabled;
 ConVar g_cvDebug;
 ConVar g_cvHordeSkillLevel;
 ConVar g_cvDefaultSkillLevel;
+ConVar g_cvFreezeDuration;
 
 Handle g_hRoundTimer;
+Handle g_hFreezeTimer;
+Handle g_hAttackTimer;
 bool   g_bMapEnabled;
+bool   g_bFrozenThisRound[MAXPLAYERS + 1];
+int    g_iFreezePollTicks;
 
 public Plugin myinfo =
 {
@@ -67,6 +75,12 @@ public void OnPluginStart()
         FCVAR_PROTECTED
     );
 
+    g_cvFreezeDuration = CreateConVar(
+        "zps_bot_zombie_horde_freeze_duration", "30.0",
+        "Seconds zombie bots stand still after the horde conversion.",
+        FCVAR_PROTECTED, true, 0.0
+    );
+
     AutoExecConfig(true, "zps_bot_zombie_horde");
     g_cvVersion.SetString(PLUGIN_VERSION);
 
@@ -78,6 +92,8 @@ public void OnPluginStart()
 public void OnMapStart()
 {
     g_hRoundTimer = null;
+    g_hFreezeTimer = null;
+    g_hAttackTimer = null;
     g_bMapEnabled = IsCurrentMapEnabled();
     ApplyNavBotSkillLevel();
 }
@@ -164,6 +180,8 @@ Action Timer_HordeBots(Handle timer)
         ForcePlayerSuicide(survivorBots[i]);
     }
 
+    StartFreezePoll();
+
     if (g_cvDebug.BoolValue)
     {
         LogMessage("[Bot Zombie Horde] Killed %d survivor bot(s). Spared: %d. Humans: %d (survivor team: %d).",
@@ -172,13 +190,16 @@ Action Timer_HordeBots(Handle timer)
 
     if (humanSurvivorCount > 0)
     {
-        WarnSurvivors();
+        MessageSurvivors("Horde Warning", RoundToNearest(g_cvFreezeDuration.FloatValue));
+
+        delete g_hAttackTimer;
+        g_hAttackTimer = CreateTimer(g_cvFreezeDuration.FloatValue, Timer_HordeAttack, _, TIMER_FLAG_NO_MAPCHANGE);
     }
 
     return Plugin_Stop;
 }
 
-void WarnSurvivors()
+void MessageSurvivors(const char[] phrase, int value = -1)
 {
     for (int client = 1; client <= MaxClients; client++)
     {
@@ -192,7 +213,85 @@ void WarnSurvivors()
             continue;
         }
 
-        PrintCenterText(client, "%t", "Horde Warning");
+        if (value == -1)
+        {
+            PrintCenterText(client, "%T", phrase, client);
+        }
+        else
+        {
+            PrintCenterText(client, "%T", phrase, client, value);
+        }
+    }
+}
+
+Action Timer_HordeAttack(Handle timer)
+{
+    g_hAttackTimer = null;
+    MessageSurvivors("Horde Attack");
+    return Plugin_Stop;
+}
+
+void StartFreezePoll()
+{
+    if (!LibraryExists("navbot"))
+    {
+        LogError("[Bot Zombie Horde] NavBot library not available, skipping freeze.");
+        return;
+    }
+
+    for (int client = 1; client <= MaxClients; client++)
+    {
+        g_bFrozenThisRound[client] = false;
+    }
+
+    g_iFreezePollTicks = 0;
+    FreezeZombieBots();
+
+    delete g_hFreezeTimer;
+    g_hFreezeTimer = CreateTimer(FREEZE_POLL_INTERVAL, Timer_FreezePoll, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+}
+
+Action Timer_FreezePoll(Handle timer)
+{
+    g_iFreezePollTicks++;
+    FreezeZombieBots();
+
+    if (g_iFreezePollTicks >= FREEZE_POLL_TICKS)
+    {
+        g_hFreezeTimer = null;
+        return Plugin_Stop;
+    }
+
+    return Plugin_Continue;
+}
+
+void FreezeZombieBots()
+{
+    for (int client = 1; client <= MaxClients; client++)
+    {
+        if (!IsClientInGame(client) || !IsFakeClient(client) || g_bFrozenThisRound[client])
+        {
+            continue;
+        }
+
+        if (!NavBotManager.IsNavBot(client))
+        {
+            continue;
+        }
+
+        if (GetClientTeam(client) != TEAM_ZOMBIE || !IsPlayerAlive(client))
+        {
+            continue;
+        }
+
+        NavBot bot = NavBotManager.GetNavBotByIndex(client);
+        if (bot.IsNull)
+        {
+            continue;
+        }
+
+        bot.SendPluginCommand(NAVBOT_PLUGINCMD_WAIT, g_cvFreezeDuration.FloatValue);
+        g_bFrozenThisRound[client] = true;
     }
 }
 
