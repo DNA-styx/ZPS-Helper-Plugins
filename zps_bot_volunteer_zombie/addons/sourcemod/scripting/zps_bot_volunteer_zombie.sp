@@ -1,5 +1,5 @@
 /**
- * ZPS Bot Volunteer Zombie v0.10.0
+ * ZPS Bot Volunteer Zombie v0.11.0
  * Author: Claude.ai guided by DNA.styx
  */
 
@@ -8,9 +8,8 @@
 #pragma semicolon 1
 #pragma newdecls required
 
-#define PLUGIN_VERSION   "0.10.0"
+#define PLUGIN_VERSION   "0.11.0"
 
-#define CLIENT_VOLUNTEER_ZOMBIE_OFFSET   5810
 #define SELECTION_WINDOW_SECONDS         15.0
 
 ConVar g_cvVersion;
@@ -18,6 +17,7 @@ ConVar g_cvMaxPlayers;
 ConVar g_cvLogging;
 char g_sLogFile[PLATFORM_MAX_PATH];
 bool g_bSelectionWindowActive;
+int g_iVolunteerOffset;
 
 public Plugin myinfo =
 {
@@ -30,6 +30,20 @@ public Plugin myinfo =
 
 public void OnPluginStart()
 {
+    GameData gd = new GameData("zps_bot_volunteer_zombie");
+    if (gd == null)
+    {
+        SetFailState("Could not load gamedata file zps_bot_volunteer_zombie.games.txt");
+    }
+
+    g_iVolunteerOffset = gd.GetOffset("VolunteerForZombie");
+    delete gd;
+
+    if (g_iVolunteerOffset == -1)
+    {
+        SetFailState("VolunteerForZombie offset not found in gamedata - check zps_bot_volunteer_zombie.games.txt");
+    }
+
     g_cvVersion = CreateConVar(
         "zps_bot_volunteer_zombie_version",
         PLUGIN_VERSION,
@@ -117,7 +131,7 @@ public void Event_PlayerTeam(Event event, const char[] name, bool dontBroadcast)
     char clientName[MAX_NAME_LENGTH];
     GetClientName(client, clientName, sizeof(clientName));
     bool isFake = IsFakeClient(client);
-    int flagValue = GetEntData(client, CLIENT_VOLUNTEER_ZOMBIE_OFFSET, 1);
+    int flagValue = GetEntData(client, g_iVolunteerOffset, 1);
 
     LogToFileEx(g_sLogFile, "[BotVolunteerZombie] SELECTED: %s (userid=%d fake=%b flag=%d)",
         clientName, userid, isFake, flagValue);
@@ -167,7 +181,7 @@ void ApplyToAllBots()
             continue;
         }
 
-        SetEntData(i, CLIENT_VOLUNTEER_ZOMBIE_OFFSET, true, 1);
+        SetEntData(i, g_iVolunteerOffset, true, 1);
         applied++;
     }
 

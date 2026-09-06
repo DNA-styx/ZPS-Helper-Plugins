@@ -1,0 +1,14 @@
+"Games"
+{
+	"zps"
+	{
+		// Verified via disassembly of Linux server_srv.so only. Windows value unconfirmed - do not assume it matches.
+		"Offsets"
+		{
+			"VolunteerForZombie"
+			{
+				"linux"		"5810"
+			}
+		}
+	}
+}
