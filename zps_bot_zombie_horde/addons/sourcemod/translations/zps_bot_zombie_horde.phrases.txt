@@ -1,11 +1,22 @@
 "Phrases"
 {
-	"Horde Warning"
+	"Horde Prepare"
 	{
-		"en"	"All bots are Zombies! You have {1} seconds to prepare!"
+		"#format"	"{1:d}"
+		"en"	"Zombies are gathering! You have {1} seconds to prepare!"
 	}
-	"Horde Attack"
+	"Horde Unfreeze Warning"
 	{
-		"en"	"The horde is coming! Zombies are attacking!"
+		"#format"	"{1:d}"
+		"en"	"Zombies unfreeze in {1} seconds! Get ready!"
+	}
+	"Horde Wave Start"
+	{
+		"en"	"The first wave has started!"
+	}
+	"Horde Wave"
+	{
+		"#format"	"{1:d}"
+		"en"	"More zombies have arrived! ({1} now hunting)"
 	}
 }
