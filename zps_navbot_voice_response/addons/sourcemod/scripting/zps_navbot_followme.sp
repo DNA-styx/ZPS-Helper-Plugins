@@ -24,13 +24,13 @@ public Plugin myinfo =
 	name        = "ZPS NavBot FollowMe",
 	author      = "Claude.ai guided by DNA.styx",
 	description = "Nearest available survivor Navbots form a squad with the caller on #VOICE_FOLLOWME.",
-	version     = "0.11.1",
+	version     = "0.12.0",
 	url         = "https://github.com/DNA-styx/ZPS-Helper-Plugins"
 };
 
 public void OnPluginStart()
 {
-	CreateConVar("sm_zps_navbot_followme_version", "0.11.1", "ZPS NavBot FollowMe version.", FCVAR_NOTIFY | FCVAR_DONTRECORD);
+	CreateConVar("sm_zps_navbot_followme_version", "0.12.0", "ZPS NavBot FollowMe version.", FCVAR_NOTIFY | FCVAR_DONTRECORD);
 	g_cvChatMessage = CreateConVar("sm_zps_navbot_followme_chatmsg", "0", "Print a chat message to the caller when a bot joins the squad. 0 = off, 1 = on.", FCVAR_PROTECTED);
 	g_cvSquadDuration = CreateConVar("sm_zps_navbot_followme_duration", "300.0", "Time in seconds a follow squad stays active before automatically disbanding.", FCVAR_PROTECTED);
 	g_cvMaxFollowers = CreateConVar("sm_zps_navbot_followme_maxfollowers", "2", "Max number of bots that can join a follow squad (1 to 8).", FCVAR_PROTECTED);
@@ -181,8 +181,9 @@ void FindNearestSurvivorBots(int caller, int[] bots, int maxBots, int &count)
 		}
 
 		NavBot bot = view_as<NavBot>(i);
+		Address squadIface = bot.GetSquadInterface();
 
-		if (NavBotSquadInterface.IsInASquad(bot.GetSquadInterface()))
+		if (NavBotSquadInterface.IsInASquad(squadIface) && NavBotSquadInterface.IsHumanLedSquad(squadIface))
 		{
 			continue;
 		}
@@ -221,6 +222,8 @@ void FindNearestSurvivorBots(int caller, int[] bots, int maxBots, int &count)
 
 void StartFollow(const int[] bots, int count, int callerClient)
 {
+	FreeBotFromExistingSquad(bots[0]);
+
 	NavBot leaderBot = view_as<NavBot>(bots[0]);
 	Address leaderSquad = leaderBot.GetSquadInterface();
 
@@ -237,10 +240,23 @@ void StartFollow(const int[] bots, int count, int callerClient)
 
 	for (int i = 1; i < count; i++)
 	{
+		FreeBotFromExistingSquad(bots[i]);
+
 		if (NavBotSquadInterface.AddMemberToSquad(leaderSquad, bots[i]))
 		{
 			OnBotJoinedSquad(bots[i], callerClient);
 		}
+	}
+}
+
+void FreeBotFromExistingSquad(int botClient)
+{
+	NavBot bot = view_as<NavBot>(botClient);
+	Address squadIface = bot.GetSquadInterface();
+
+	if (NavBotSquadInterface.IsInASquad(squadIface))
+	{
+		NavBotSquadInterface.DestroySquad(squadIface);
 	}
 }
 
