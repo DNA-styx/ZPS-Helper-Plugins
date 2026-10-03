@@ -1,0 +1,14 @@
+"Games"
+{
+	"zps"
+	{
+		"Signatures"
+		{
+			"CASRoundManager::SetWinState"
+			{
+				"library"	"server"
+				"linux"		"@_ZN15CASRoundManager11SetWinStateE13RoundWinState"
+			}
+		}
+	}
+}
