@@ -8,7 +8,7 @@
 	"Horde Unfreeze Warning"
 	{
 		"#format"	"{1:d}"
-		"en"	"Zombies unfreeze in {1} seconds! Get ready!"
+		"en"	"Zombies will be released in {1} seconds! Get ready!"
 	}
 	"Horde Wave Start"
 	{
