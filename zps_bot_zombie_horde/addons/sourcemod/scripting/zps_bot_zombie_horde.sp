@@ -9,9 +9,10 @@
 
 #include <sourcemod>
 #include <sdktools>
+#include <sdkhooks>
 #include <navbot>
 
-#define PLUGIN_VERSION      "0.14.0"
+#define PLUGIN_VERSION      "0.17.0"
 
 #define TEAM_SURVIVOR       2
 #define TEAM_ZOMBIE         3
@@ -29,6 +30,8 @@ ConVar g_cvDefaultQuotaFixed;
 ConVar g_cvDefaultQuotaTarget;
 ConVar g_cvFreezeDuration;
 ConVar g_cvUnfreezeWarningSeconds;
+ConVar g_cvBotHoldDuration;
+ConVar g_cvZombiesPerPlayer;
 ConVar g_cvNavBotSkillLevel;
 
 Handle g_hRoundTimer;
@@ -36,9 +39,22 @@ Handle g_hWaveTimer;
 Handle g_hWaveDelayTimer;
 Handle g_hFreezeTimer;
 Handle g_hFreezeWarningTimer;
+Handle g_hBotHoldTimer;
 bool   g_bMapEnabled;
+bool   g_bRoundStarted;
 bool   g_bFrozenThisRound[MAXPLAYERS + 1];
 float  g_fFreezeEndTime;
+bool   g_bHeld[MAXPLAYERS + 1];
+float  g_fBotHoldEndTime;
+
+// Per-map overrides from the map config; -1 = use the cvar.
+float  g_fMapFreezeDuration = -1.0;
+int    g_iMapZombiesPerPlayer = -1;
+
+#include "zps_bot_zombie_horde/util.sp"
+#include "zps_bot_zombie_horde/quota.sp"
+#include "zps_bot_zombie_horde/freeze.sp"
+#include "zps_bot_zombie_horde/roundstart.sp"
 
 public Plugin myinfo =
 {
@@ -115,13 +131,25 @@ public void OnPluginStart()
 
     g_cvFreezeDuration = CreateConVar(
         "zps_bot_zombie_horde_freeze_duration", "30.0",
-        "Seconds zombie bots stand still after round start, letting the quota settle.",
-        FCVAR_PROTECTED, true, 1.0
+        "Seconds zombies stand still after round start. 0 = no freeze.",
+        FCVAR_PROTECTED, true, 0.0
     );
 
     g_cvUnfreezeWarningSeconds = CreateConVar(
         "zps_bot_zombie_horde_unfreeze_warning_seconds", "10.0",
         "Seconds before unfreeze to show a warning message.",
+        FCVAR_PROTECTED, true, 0.0
+    );
+
+    g_cvBotHoldDuration = CreateConVar(
+        "zps_bot_zombie_horde_bot_hold_duration", "60.0",
+        "Seconds survivor bots stand still from map start and each round start. 0 = off.",
+        FCVAR_PROTECTED, true, 0.0
+    );
+
+    g_cvZombiesPerPlayer = CreateConVar(
+        "zps_bot_zombie_horde_zombies_per_player", "0",
+        "Most zombie bots per real survivor. 0 = fill to free slots.",
         FCVAR_PROTECTED, true, 0.0
     );
 
@@ -138,70 +166,47 @@ public void OnPluginStart()
 
 public void OnMapStart()
 {
-    // Timers flagged TIMER_FLAG_NO_MAPCHANGE are already force-killed by
-    // SourceMod before OnMapStart runs, so their handles are dead here.
-    // Assign null directly - do not delete/close them, that throws
-    // "Handle is invalid" on an already-freed handle.
+    // NO_MAPCHANGE timers are already freed here: null them, never delete.
     g_hRoundTimer = null;
     g_hWaveTimer = null;
     g_hWaveDelayTimer = null;
     g_hFreezeTimer = null;
     g_hFreezeWarningTimer = null;
+    g_hBotHoldTimer = null;
 
-    // Game time restarts each map, so a stale end time could freeze players.
+    // Game time restarts each map; a stale end time would freeze players.
     g_fFreezeEndTime = 0.0;
+    g_bRoundStarted = false;
 
-    g_bMapEnabled = IsCurrentMapEnabled();
+    g_bMapEnabled = LoadMapSettings();
     ApplyNavBotSkillLevel();
 
     if (!g_bMapEnabled)
     {
         ApplyQuota(g_cvDefaultQuotaFixed.IntValue, g_cvDefaultQuotaTarget.IntValue);
     }
+
+    StartBotHold();
 }
 
 public void OnClientPutInServer(int client)
 {
-    if (!IsFakeClient(client))
+    if (IsFakeClient(client))
     {
-        ClampQuotaToCap();
+        SDKHook(client, SDKHook_SpawnPost, OnBotSpawnPost);
+        return;
     }
+
+    ClampQuotaToCap();
 }
 
 public void OnPluginEnd()
 {
-    // Timers owned by this plugin are closed automatically by SourceMod on
-    // unload, and may already be dead here if unload coincides with a map
-    // transition (same NO_MAPCHANGE cleanup as OnMapStart) - do not delete
-    // them manually, that can hit an already-freed handle.
+    // SourceMod frees plugin timers on unload; deleting here can hit freed handles.
     ApplyQuota(g_cvDefaultQuotaFixed.IntValue, g_cvDefaultQuotaTarget.IntValue);
 }
 
-// Freezes real zombie players during the freeze window by blocking movement
-// input. Bots are frozen separately via NavBot WAIT. Ends on its own once
-// g_fFreezeEndTime passes, so no restore is needed.
-public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3], float angles[3])
-{
-    if (!g_bMapEnabled || GetGameTime() >= g_fFreezeEndTime)
-    {
-        return Plugin_Continue;
-    }
-
-    if (IsFakeClient(client) || !IsPlayerAlive(client) || GetClientTeam(client) != TEAM_ZOMBIE)
-    {
-        return Plugin_Continue;
-    }
-
-    vel[0] = 0.0;
-    vel[1] = 0.0;
-    vel[2] = 0.0;
-    buttons &= ~(IN_JUMP | IN_DUCK | IN_FORWARD | IN_BACK | IN_MOVELEFT | IN_MOVERIGHT);
-    return Plugin_Changed;
-}
-
-// Same-map use only (Event_ClientSound) where timers may genuinely still
-// be running and need actual cancellation. Never call this from
-// OnMapStart or OnPluginEnd - see the comments there.
+// Same-map use only. Never call from OnMapStart or OnPluginEnd.
 void ClearHordeTimers()
 {
     delete g_hRoundTimer;
@@ -209,28 +214,6 @@ void ClearHordeTimers()
     delete g_hWaveDelayTimer;
     delete g_hFreezeTimer;
     delete g_hFreezeWarningTimer;
-}
-
-void ApplyNavBotSkillLevel()
-{
-    int level = g_bMapEnabled ? g_cvHordeSkillLevel.IntValue : g_cvDefaultSkillLevel.IntValue;
-    g_cvNavBotSkillLevel.SetInt(level);
-}
-
-bool ApplyQuota(int fixedValue, int target)
-{
-    ConVar cvFixed = FindConVar("sm_navbot_quota_fixed");
-    ConVar cvTarget = FindConVar("sm_navbot_quota_target");
-
-    if (cvFixed == null || cvTarget == null)
-    {
-        LogError("[Bot Zombie Horde] sm_navbot_quota_fixed/target not found, skipping.");
-        return false;
-    }
-
-    cvFixed.SetInt(fixedValue);
-    cvTarget.SetInt(target);
-    return true;
 }
 
 void Event_ClientSound(Event event, const char[] name, bool dontBroadcast)
@@ -243,21 +226,28 @@ void Event_ClientSound(Event event, const char[] name, bool dontBroadcast)
     char sound[64];
     event.GetString("sound", sound, sizeof(sound));
 
+    // Covers Round_End.Human, Round_End.Zombie and Round_End.Stalemate.
+    if (StrContains(sound, "Round_End", false) != -1)
+    {
+        g_bRoundStarted = false;
+        return;
+    }
+
     if (StrContains(sound, "Round_Starting", false) == -1)
     {
         return;
     }
 
-    // clientsound fires per client, so this can run several times per round.
-    // Clearing every timer first keeps the previous round's wave/freeze timers
-    // from running alongside the new round's.
+    // Fires once per client; clear the previous round's timers before restarting.
+    g_bRoundStarted = false;
     ClearHordeTimers();
+    StartBotHold();
     g_hRoundTimer = CreateTimer(ROUND_START_DELAY, Timer_HordeRoundStart, _, TIMER_FLAG_NO_MAPCHANGE);
 }
 
 void Event_PlayerTeam(Event event, const char[] name, bool dontBroadcast)
 {
-    if (!g_bMapEnabled || !g_cvEnabled.BoolValue)
+    if (!g_bMapEnabled || !g_cvEnabled.BoolValue || !g_bRoundStarted)
     {
         return;
     }
@@ -276,390 +266,24 @@ void Event_PlayerTeam(Event event, const char[] name, bool dontBroadcast)
     KillSurvivorBots();
 }
 
-// Moves every real survivor to the lowest-index real survivor's position.
-// ZPS lets teammates pass through each other, so a shared spot is safe, and
-// the anchor's own origin is a valid standing position (not in the ground).
-void GroupHumanSurvivors()
+void OnBotSpawnPost(int client)
 {
-    int anchor = 0;
-    float origin[3];
-    float noVelocity[3];
-
-    for (int client = 1; client <= MaxClients; client++)
-    {
-        if (!IsClientInGame(client) || IsFakeClient(client) || !IsPlayerAlive(client))
-        {
-            continue;
-        }
-
-        if (GetClientTeam(client) != TEAM_SURVIVOR)
-        {
-            continue;
-        }
-
-        if (anchor == 0)
-        {
-            anchor = client;
-            GetClientAbsOrigin(anchor, origin);
-            continue;
-        }
-
-        TeleportEntity(client, origin, NULL_VECTOR, noVelocity);
-
-        if (g_cvDebug.BoolValue)
-        {
-            LogMessage("[Bot Zombie Horde] Moved survivor %d to anchor %d.", client, anchor);
-        }
-    }
-}
-
-void KillSurvivorBots()
-{
-    int survivorBots[MAXPLAYERS + 1];
-    int botCount = 0;
-
-    for (int client = 1; client <= MaxClients; client++)
-    {
-        if (!IsClientInGame(client) || !IsFakeClient(client))
-        {
-            continue;
-        }
-
-        if (GetClientTeam(client) == TEAM_SURVIVOR && IsPlayerAlive(client))
-        {
-            survivorBots[botCount] = client;
-            botCount++;
-        }
-    }
-
-    // With no human survivors, leave one bot so the round does not end instantly.
-    if (CountHumanSurvivors() == 0 && botCount > 0)
-    {
-        botCount--;
-    }
-
-    for (int i = 0; i < botCount; i++)
-    {
-        ForcePlayerSuicide(survivorBots[i]);
-    }
-
-    if (g_cvDebug.BoolValue)
-    {
-        LogMessage("[Bot Zombie Horde] Killed %d survivor bot(s).", botCount);
-    }
-}
-
-Action Timer_HordeRoundStart(Handle timer)
-{
-    g_hRoundTimer = null;
-
-    if (!g_bMapEnabled || !g_cvEnabled.BoolValue)
-    {
-        return Plugin_Handled;
-    }
-
-    int humanSurvivorCount = CountHumanSurvivors();
-    int target = 2;
-
-    if (humanSurvivorCount > 1)
-    {
-        GroupHumanSurvivors();
-    }
-
-    KillSurvivorBots();
-
-    if (ApplyQuota(1, target) && g_cvDebug.BoolValue)
-    {
-        LogMessage("[Bot Zombie Horde] Round start. Survivors: %d. Quota target: %d.",
-            humanSurvivorCount, target);
-    }
-
-    ClampQuotaToCap();
-
-    if (humanSurvivorCount > 0)
-    {
-        MessagePlayers("Horde Prepare", RoundToNearest(g_cvFreezeDuration.FloatValue));
-    }
-
-    StartFreezePoll();
-
-    float warnDelay = g_cvFreezeDuration.FloatValue - g_cvUnfreezeWarningSeconds.FloatValue;
-    delete g_hFreezeWarningTimer;
-    if (warnDelay > 0.0)
-    {
-        g_hFreezeWarningTimer = CreateTimer(warnDelay, Timer_UnfreezeWarning, _, TIMER_FLAG_NO_MAPCHANGE);
-    }
-
-    delete g_hWaveDelayTimer;
-    g_hWaveDelayTimer = CreateTimer(g_cvFreezeDuration.FloatValue, Timer_HordeWaveBegin, _, TIMER_FLAG_NO_MAPCHANGE);
-
-    return Plugin_Handled;
-}
-
-Action Timer_UnfreezeWarning(Handle timer)
-{
-    g_hFreezeWarningTimer = null;
-
-    if (!g_bMapEnabled || !g_cvEnabled.BoolValue)
-    {
-        return Plugin_Handled;
-    }
-
-    MessagePlayers("Horde Unfreeze Warning", RoundToNearest(g_cvUnfreezeWarningSeconds.FloatValue));
-    return Plugin_Handled;
-}
-
-Action Timer_HordeWaveBegin(Handle timer)
-{
-    g_hWaveDelayTimer = null;
-
-    if (!g_bMapEnabled || !g_cvEnabled.BoolValue)
-    {
-        return Plugin_Handled;
-    }
-
-    MessagePlayers("Horde Wave Start");
-
-    delete g_hWaveTimer;
-    g_hWaveTimer = CreateTimer(g_cvWaveInterval.FloatValue, Timer_HordeWave, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
-
-    return Plugin_Handled;
-}
-
-void StartFreezePoll()
-{
-    if (!LibraryExists("navbot"))
-    {
-        LogError("[Bot Zombie Horde] NavBot library not available, skipping freeze.");
-        return;
-    }
-
-    for (int client = 1; client <= MaxClients; client++)
-    {
-        g_bFrozenThisRound[client] = false;
-    }
-
-    g_fFreezeEndTime = GetGameTime() + g_cvFreezeDuration.FloatValue;
-    FreezeZombieBots(g_cvFreezeDuration.FloatValue);
-
-    delete g_hFreezeTimer;
-    g_hFreezeTimer = CreateTimer(FREEZE_POLL_INTERVAL, Timer_FreezePoll, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
-}
-
-Action Timer_FreezePoll(Handle timer)
-{
-    float remaining = g_fFreezeEndTime - GetGameTime();
-
-    if (remaining <= FREEZE_POLL_INTERVAL)
-    {
-        g_hFreezeTimer = null;
-        return Plugin_Stop;
-    }
-
-    FreezeZombieBots(remaining);
-    return Plugin_Continue;
-}
-
-void FreezeZombieBots(float duration)
-{
-    for (int client = 1; client <= MaxClients; client++)
-    {
-        if (!IsClientInGame(client) || !IsFakeClient(client) || g_bFrozenThisRound[client])
-        {
-            continue;
-        }
-
-        if (!NavBotManager.IsNavBot(client))
-        {
-            continue;
-        }
-
-        if (GetClientTeam(client) != TEAM_ZOMBIE || !IsPlayerAlive(client))
-        {
-            continue;
-        }
-
-        NavBot bot = NavBotManager.GetNavBotByIndex(client);
-        if (bot.IsNull)
-        {
-            continue;
-        }
-
-        bot.SendPluginCommand(NAVBOT_PLUGINCMD_WAIT, duration);
-        g_bFrozenThisRound[client] = true;
-    }
-}
-
-Action Timer_HordeWave(Handle timer)
-{
-    if (!g_bMapEnabled || !g_cvEnabled.BoolValue)
-    {
-        g_hWaveTimer = null;
-        return Plugin_Stop;
-    }
-
-    ConVar cvTarget = FindConVar("sm_navbot_quota_target");
-    if (cvTarget == null)
-    {
-        LogError("[Bot Zombie Horde] sm_navbot_quota_target not found, stopping wave timer.");
-        g_hWaveTimer = null;
-        return Plugin_Stop;
-    }
-
-    int humanSurvivorCount = CountHumanSurvivors();
-    int oldTarget = cvTarget.IntValue;
-    int cap = GetBotCap();
-
-    int newTarget = oldTarget + humanSurvivorCount;
-    if (newTarget > cap)
-    {
-        newTarget = cap;
-    }
-
-    if (newTarget != oldTarget)
-    {
-        cvTarget.SetInt(newTarget);
-
-        if (newTarget > oldTarget)
-        {
-            MessagePlayers("Horde Wave", newTarget);
-        }
-
-        if (g_cvDebug.BoolValue)
-        {
-            LogMessage("[Bot Zombie Horde] Wave. Survivors: %d. Cap: %d. Quota target: %d -> %d.",
-                humanSurvivorCount, cap, oldTarget, newTarget);
-        }
-    }
-
-    // Keep running at the cap so the target follows players joining and leaving.
-    return Plugin_Continue;
-}
-
-// Bot slots left once every non-bot client (players, spectators, SourceTV)
-// is counted, keeping one slot free for a joining player.
-int GetBotCap()
-{
-    int others = 0;
-
-    for (int client = 1; client <= MaxClients; client++)
-    {
-        if (!IsClientConnected(client))
-        {
-            continue;
-        }
-
-        if (IsClientInGame(client) && NavBotManager.IsNavBot(client))
-        {
-            continue;
-        }
-
-        others++;
-    }
-
-    int cap = MaxClients - 1 - others;
-    return (cap < 0) ? 0 : cap;
-}
-
-// Lowers the horde quota target if it no longer fits in the free slots.
-void ClampQuotaToCap()
-{
-    if (!g_bMapEnabled || !g_cvEnabled.BoolValue)
+    if (!g_bMapEnabled || !g_cvEnabled.BoolValue || !g_bRoundStarted)
     {
         return;
     }
 
-    ConVar cvFixed = FindConVar("sm_navbot_quota_fixed");
-    ConVar cvTarget = FindConVar("sm_navbot_quota_target");
+    // One frame later, so the spawn's team has applied.
+    RequestFrame(Frame_CheckLateBot, GetClientUserId(client));
+}
 
-    // Only fixed mode counts bots alone; leave normal fill mode untouched.
-    if (cvFixed == null || cvTarget == null || cvFixed.IntValue != 1)
+void Frame_CheckLateBot(int userid)
+{
+    int client = GetClientOfUserId(userid);
+    if (client <= 0 || !IsClientInGame(client))
     {
         return;
     }
 
-    int cap = GetBotCap();
-    if (cvTarget.IntValue > cap)
-    {
-        if (g_cvDebug.BoolValue)
-        {
-            LogMessage("[Bot Zombie Horde] Player joined. Quota target lowered %d -> %d.",
-                cvTarget.IntValue, cap);
-        }
-
-        cvTarget.SetInt(cap);
-    }
-}
-
-int CountHumanSurvivors()
-{
-    int count = 0;
-
-    for (int client = 1; client <= MaxClients; client++)
-    {
-        if (!IsClientInGame(client) || IsFakeClient(client))
-        {
-            continue;
-        }
-
-        if (GetClientTeam(client) == TEAM_SURVIVOR)
-        {
-            count++;
-        }
-    }
-
-    return count;
-}
-
-void MessagePlayers(const char[] phrase, int value = -1)
-{
-    for (int client = 1; client <= MaxClients; client++)
-    {
-        if (!IsClientInGame(client) || IsFakeClient(client))
-        {
-            continue;
-        }
-
-        int team = GetClientTeam(client);
-        if ((team != TEAM_SURVIVOR && team != TEAM_ZOMBIE) || !IsPlayerAlive(client))
-        {
-            continue;
-        }
-
-        if (value == -1)
-        {
-            PrintCenterText(client, "%T", phrase, client);
-        }
-        else
-        {
-            PrintCenterText(client, "%T", phrase, client, value);
-        }
-    }
-}
-
-bool IsCurrentMapEnabled()
-{
-    char mapName[64];
-    GetCurrentMap(mapName, sizeof(mapName));
-    GetMapDisplayName(mapName, mapName, sizeof(mapName));
-
-    char path[PLATFORM_MAX_PATH];
-    BuildPath(Path_SM, path, sizeof(path), "configs/zps_bot_zombie_horde/zps_bot_zombie_horde_maps.cfg");
-
-    if (!FileExists(path))
-    {
-        return false;
-    }
-
-    KeyValues kv = new KeyValues("Maps");
-    bool imported = kv.ImportFromFile(path);
-
-    bool enabled = false;
-    if (imported)
-    {
-        enabled = kv.GetNum(mapName, 0) != 0;
-    }
-
-    delete kv;
-    return enabled;
+    KillLateSurvivorBot(client);
 }
